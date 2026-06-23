@@ -149,6 +149,35 @@ cat > /workspace/ltx23_ready.json <<MANIFEST
   "log": "$LOG_FILE"
 }
 MANIFEST
+COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+cd "$COMFY_DIR"
+mkdir -p custom_nodes
+cd custom_nodes
+
+if [ ! -d ComfyUI-KJNodes ]; then
+  git clone --depth=1 https://github.com/kijai/ComfyUI-KJNodes.git
+else
+  cd ComfyUI-KJNodes
+  git pull --ff-only
+  cd ..
+fi
+
+if [ ! -d ComfyUI-LTXVideo ]; then
+  git clone --depth=1 https://github.com/Lightricks/ComfyUI-LTXVideo.git
+else
+  cd ComfyUI-LTXVideo
+  git pull --ff-only
+  cd ..
+fi
+
+if [ -f ComfyUI-KJNodes/requirements.txt ]; then
+  "$PYTHON_BIN" -m pip install -r ComfyUI-KJNodes/requirements.txt
+fi
+if [ -f ComfyUI-LTXVideo/requirements.txt ]; then
+  "$PYTHON_BIN" -m pip install -r ComfyUI-LTXVideo/requirements.txt
+fi
 
 log "restart comfyui if supervisor program exists"
 if command -v supervisorctl >/dev/null 2>&1; then
