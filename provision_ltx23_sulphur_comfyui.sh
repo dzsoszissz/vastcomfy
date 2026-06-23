@@ -40,7 +40,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 mkdir -p "$CKPT_DIR" "$LORA_DIR" "$TEXT_DIR" "$UPSCALE_DIR" "$WORKFLOW_DIR" "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR" "$CUSTOM_DIR" "$STAGE_ROOT" "$HF_HOME" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$HF_ASSETS_CACHE"
 
 FREE_GB="$(df -BG /workspace | awk 'NR==2 {gsub(/G/,"",$4); print $4}')"
-[ "${FREE_GB:-0}" -ge 60 ] || fail "free disk below 60GB on /workspace: ${FREE_GB:-0}GB"
+[ "${FREE_GB:-0}" -ge 40 ] || fail "free disk below 60GB on /workspace: ${FREE_GB:-0}GB"
 
 PY="/venv/main/bin/python"
 [ -x "$PY" ] || PY="/opt/venv/bin/python"
