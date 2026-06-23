@@ -5,6 +5,7 @@ log() { echo "[ltx23-provision] $*"; }
 fail() { echo "[ltx23-provision][FAIL] $*" >&2; exit 1; }
 
 : "${HF_TOKEN:?HF_TOKEN is required}"
+case "$HF_TOKEN" in hf_*) ;; *) fail "HF_TOKEN must start with hf_" ;; esac
 
 export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-/workspace/.cache/huggingface/hub}"
@@ -29,71 +30,123 @@ WORKFLOW_DIR="${COMFYUI_WORKFLOW_DIR:-$COMFYUI_ROOT/user/default/workflows}"
 INPUT_DIR="${COMFYUI_INPUT_DIR:-$COMFYUI_ROOT/input}"
 OUTPUT_DIR="${COMFYUI_OUTPUT_DIR:-$COMFYUI_ROOT/output}"
 TEMP_DIR="${COMFYUI_TEMP_DIR:-$COMFYUI_ROOT/temp}"
-TMP_DIR="/workspace/.ltx23_provision_tmp"
+CUSTOM_DIR="$COMFYUI_ROOT/custom_nodes"
+STAGE_ROOT="/workspace/.ltx23_stage"
+LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning_ltx23.log}"
 
-mkdir -p "$CKPT_DIR" "$LORA_DIR" "$TEXT_DIR" "$UPSCALE_DIR" "$WORKFLOW_DIR" "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR" "$TMP_DIR" "$HF_HOME" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$HF_ASSETS_CACHE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+[ -d "$COMFYUI_ROOT" ] || fail "ComfyUI root not found: $COMFYUI_ROOT"
+mkdir -p "$CKPT_DIR" "$LORA_DIR" "$TEXT_DIR" "$UPSCALE_DIR" "$WORKFLOW_DIR" "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR" "$CUSTOM_DIR" "$STAGE_ROOT" "$HF_HOME" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$HF_ASSETS_CACHE"
+
+FREE_GB="$(df -BG /workspace | awk 'NR==2 {gsub(/G/,"",$4); print $4}')"
+[ "${FREE_GB:-0}" -ge 60 ] || fail "free disk below 60GB on /workspace: ${FREE_GB:-0}GB"
 
 PY="/venv/main/bin/python"
-if [ ! -x "$PY" ]; then PY="$(command -v python3 || true)"; fi
+[ -x "$PY" ] || PY="/opt/venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || true)"
 [ -n "$PY" ] || fail "python3 not found"
 
-log "install huggingface_hub + hf_xet"
-"$PY" -m pip install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/ltx23_pip.log 2>&1 || { cat /tmp/ltx23_pip.log >&2; fail "pip install failed"; }
+PIP="$PY -m pip"
+log "install/update huggingface_hub hf_xet"
+$PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/ltx23_pip_hf.log 2>&1 || { cat /tmp/ltx23_pip_hf.log >&2; fail "pip install huggingface_hub[hf_xet] failed"; }
 
-if command -v hf >/dev/null 2>&1; then
-  HFCLI="hf"
-elif command -v huggingface-cli >/dev/null 2>&1; then
-  HFCLI="huggingface-cli"
-else
-  fail "hf cli not found after install"
-fi
+HFCLI="$(dirname "$PY")/hf"
+[ -x "$HFCLI" ] || HFCLI="$(command -v hf || true)"
+[ -x "$HFCLI" ] || HFCLI="$(command -v huggingface-cli || true)"
+[ -x "$HFCLI" ] || fail "hf cli not found"
 
 hf_file() {
-  local repo="$1" file="$2" dest="$3"
-  local dest_dir
-  dest_dir="$(dirname "$dest")"
-  mkdir -p "$dest_dir"
+  local repo="$1" src="$2" dest="$3"
+  local stage src_path
+  stage="$STAGE_ROOT/$(echo "$repo/$src" | tr '/:' '__')"
+  src_path="$stage/$src"
   if [ -s "$dest" ]; then
     log "exists: $dest"
     return 0
   fi
-  rm -rf "$TMP_DIR/download"
-  mkdir -p "$TMP_DIR/download"
-  log "download: $repo :: $file"
-  "$HFCLI" download "$repo" "$file" --repo-type model --token "$HF_TOKEN" --local-dir "$TMP_DIR/download" --local-dir-use-symlinks False >/tmp/ltx23_hf.log 2>&1 || { cat /tmp/ltx23_hf.log >&2; fail "hf download failed: $repo :: $file"; }
-  [ -s "$TMP_DIR/download/$file" ] || fail "downloaded file missing: $TMP_DIR/download/$file"
-  cp -f "$TMP_DIR/download/$file" "$dest"
-  [ -s "$dest" ] || fail "copy failed: $dest"
+  rm -rf "$stage"
+  mkdir -p "$stage" "$(dirname "$dest")"
+  log "download: $repo :: $src"
+  "$HFCLI" download "$repo" "$src" --repo-type model --token "$HF_TOKEN" --local-dir "$stage" >/tmp/ltx23_hf.log 2>&1 || { cat /tmp/ltx23_hf.log >&2; fail "hf download failed: $repo :: $src"; }
+  [ -s "$src_path" ] || fail "downloaded file missing: $src_path"
+  mv -f "$src_path" "$dest"
+  rm -rf "$stage"
+  [ -s "$dest" ] || fail "target missing after move: $dest"
 }
 
-hf_file "Seregil13th/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/sulphur_dev_fp8mixed.safetensors"
-ln -sf "$CKPT_DIR/sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
+git_install_node() {
+  local repo_url="$1" dest="$2"
+  if [ -d "$dest/.git" ]; then
+    log "custom node exists: $dest"
+  else
+    rm -rf "$dest"
+    log "clone custom node: $repo_url"
+    git clone --depth 1 "$repo_url" "$dest" || fail "git clone failed: $repo_url"
+  fi
+  if [ -f "$dest/requirements.txt" ]; then
+    log "install requirements: $dest/requirements.txt"
+    $PIP install -r "$dest/requirements.txt" >/tmp/ltx23_node_req.log 2>&1 || { cat /tmp/ltx23_node_req.log >&2; fail "node requirements install failed: $dest"; }
+  fi
+}
 
-hf_file "Seregil13th/Sulphur-2-base" "distill_loras/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors" "$LORA_DIR/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors"
-ln -sf "$LORA_DIR/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors" "$LORA_DIR/ltx-2.3-22b-distilled-lora-384.safetensors"
+curl_file() {
+  local url="$1" dest="$2"
+  if [ -s "$dest" ]; then
+    log "exists: $dest"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  log "download: $url"
+  curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 "$url" -o "$dest.tmp" || fail "curl download failed: $url"
+  [ -s "$dest.tmp" ] || fail "downloaded temp file is empty: $dest.tmp"
+  mv -f "$dest.tmp" "$dest"
+  [ -s "$dest" ] || fail "target missing after curl: $dest"
+}
 
+log "install ComfyUI-LTXVideo custom nodes"
+git_install_node "https://github.com/Lightricks/ComfyUI-LTXVideo.git" "$CUSTOM_DIR/ComfyUI-LTXVideo"
+
+log "download models"
+hf_file "Seregil13th/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
+hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors"
+hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors"
 hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors"
-hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
+hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors"
 
-log "download FLF workflow"
-WF_URL="https://raw.githubusercontent.com/Comfy-Org/Subgraph-Blueprints/main/First-Last-Frame%20to%20Video%20%28LTX-2.3%29.json"
-WF_DEST="$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json"
-if [ ! -s "$WF_DEST" ]; then
-  curl -fL --retry 5 --retry-delay 5 "$WF_URL" -o "$WF_DEST" || fail "workflow download failed"
-fi
-[ -s "$WF_DEST" ] || fail "workflow missing: $WF_DEST"
+log "download workflows"
+curl_file "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_ltx2_3_i2v.json" "$WORKFLOW_DIR/video_ltx2_3_i2v.json"
+curl_file "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_ltx2_3_t2v.json" "$WORKFLOW_DIR/video_ltx2_3_t2v.json"
+curl_file "https://raw.githubusercontent.com/Comfy-Org/Subgraph-Blueprints/main/First-Last-Frame%20to%20Video%20%28LTX-2.3%29.json" "$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json"
 
-log "write manifest"
+log "validate files"
+for f in \
+  "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors" \
+  "$LORA_DIR/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" \
+  "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" \
+  "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors" \
+  "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors" \
+  "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors" \
+  "$WORKFLOW_DIR/video_ltx2_3_i2v.json" \
+  "$WORKFLOW_DIR/video_ltx2_3_t2v.json" \
+  "$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json"; do
+  [ -s "$f" ] || fail "missing/empty: $f"
+done
+
 cat > /workspace/ltx23_ready.json <<MANIFEST
 {
   "status": "ready",
-  "checkpoint": "$CKPT_DIR/sulphur_dev_fp8mixed.safetensors",
-  "checkpoint_alias": "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors",
-  "lora": "$LORA_DIR/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors",
-  "lora_alias": "$LORA_DIR/ltx-2.3-22b-distilled-lora-384.safetensors",
+  "checkpoint": "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors",
+  "lora_distilled": "$LORA_DIR/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+  "lora_prompt": "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors",
   "text_encoder": "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors",
-  "latent_upscaler": "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
-  "workflow": "$WF_DEST"
+  "spatial_upscaler": "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+  "temporal_upscaler": "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
+  "workflow_i2v": "$WORKFLOW_DIR/video_ltx2_3_i2v.json",
+  "workflow_t2v": "$WORKFLOW_DIR/video_ltx2_3_t2v.json",
+  "workflow_flf": "$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json",
+  "log": "$LOG_FILE"
 }
 MANIFEST
 
