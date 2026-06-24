@@ -178,7 +178,7 @@ fi
 if [ -f ComfyUI-LTXVideo/requirements.txt ]; then
   "$PYTHON_BIN" -m pip install -r ComfyUI-LTXVideo/requirements.txt
 fi
-
+ln -sf "$OUTPUT_DIR/latents" "$INPUT_DIR/latents"
 log "restart comfyui if supervisor program exists"
 if command -v supervisorctl >/dev/null 2>&1; then
   supervisorctl status | awk '{print $1}' | grep -Ei 'comfy|comfyui' | while read -r svc; do supervisorctl restart "$svc" || true; done
