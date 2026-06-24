@@ -160,10 +160,10 @@ if [ ! -d ComfyUI-KJNodes ]; then
   git clone --depth=1 https://github.com/kijai/ComfyUI-KJNodes.git
 else
   cd ComfyUI-KJNodes
-  git pull --ff-only
+  git fetch --depth=1 origin main
+  git reset --hard origin/main
   cd ..
 fi
-
 if [ ! -d ComfyUI-LTXVideo ]; then
   git clone --depth=1 https://github.com/Lightricks/ComfyUI-LTXVideo.git
 else
