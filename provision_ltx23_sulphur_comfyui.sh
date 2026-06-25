@@ -104,6 +104,15 @@ curl_file() {
   [ -s "$dest" ] || fail "target missing after curl: $dest"
 }
 
+log "update ComfyUI core"
+cd "$COMFYUI_ROOT"
+if [ -d ".git" ]; then
+  git fetch --depth=1 origin master
+  git reset --hard origin/master
+  $PIP install -r requirements.txt >/tmp/ltx23_comfy_req.log 2>&1 || { cat /tmp/ltx23_comfy_req.log >&2; fail "ComfyUI requirements install failed"; }
+fi
+cd -
+
 log "install ComfyUI-LTXVideo custom nodes"
 git_install_node "https://github.com/Lightricks/ComfyUI-LTXVideo.git" "$CUSTOM_DIR/ComfyUI-LTXVideo"
 
@@ -151,6 +160,7 @@ cat > /workspace/ltx23_ready.json <<MANIFEST
   "log": "$LOG_FILE"
 }
 MANIFEST
+
 COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
