@@ -113,6 +113,7 @@ hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dy
 hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors"
 hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ltxv/ltx2/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors"
 
 log "download workflows"
@@ -127,6 +128,7 @@ for f in \
   "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" \
   "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors" \
   "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors" \
+  "$LORA_DIR/ltxv/ltx2/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" \
   "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors" \
   "$WORKFLOW_DIR/video_ltx2_3_i2v.json" \
   "$WORKFLOW_DIR/video_ltx2_3_t2v.json" \
