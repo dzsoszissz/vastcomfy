@@ -170,7 +170,8 @@ if [ ! -d ComfyUI-LTXVideo ]; then
   git clone --depth=1 https://github.com/Lightricks/ComfyUI-LTXVideo.git
 else
   cd ComfyUI-LTXVideo
-  git pull --ff-only
+  git fetch --depth=1 origin main
+  git reset --hard origin/main
   cd ..
 fi
 
