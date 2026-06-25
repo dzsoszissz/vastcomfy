@@ -184,6 +184,35 @@ else
   git reset --hard origin/master
   cd ..
 fi
+log "patch ComfyUI-LTXVideo pyramid_blending.py kornia compatibility"
+python3 << 'PYEOF'
+content = open('custom_nodes/ComfyUI-LTXVideo/pyramid_blending.py').read()
+old = (
+    'from kornia.geometry.transform.pyramid import (\n'
+    '    PyrUp,\n'
+    '    build_laplacian_pyramid,\n'
+    '    build_pyramid,\n'
+    '    find_next_powerof_two,\n'
+    '    is_powerof_two,\n'
+    '    pad,\n'
+    ')'
+)
+new = (
+    'from kornia.geometry.transform.pyramid import (\n'
+    '    PyrUp,\n'
+    '    build_laplacian_pyramid,\n'
+    '    build_pyramid,\n'
+    '    find_next_powerof_two,\n'
+    '    is_powerof_two,\n'
+    ')\n'
+    'from torch.nn.functional import pad'
+)
+if old in content:
+    open('custom_nodes/ComfyUI-LTXVideo/pyramid_blending.py', 'w').write(content.replace(old, new))
+    print('[ltx23-provision] pyramid_blending.py patched')
+else:
+    print('[ltx23-provision] pyramid_blending.py already patched or not found')
+PYEOF
 
 if [ -f ComfyUI-KJNodes/requirements.txt ]; then
   "$PYTHON_BIN" -m pip install -r ComfyUI-KJNodes/requirements.txt
