@@ -192,26 +192,26 @@ if not os.path.isfile(target):
     print('[ltx23-provision] pyramid_blending.py not found - skip')
 else:
     content = open(target).read()
-old = (
-    'from kornia.geometry.transform.pyramid import (\n'
-    '    PyrUp,\n'
-    '    build_laplacian_pyramid,\n'
-    '    build_pyramid,\n'
-    '    find_next_powerof_two,\n'
-    '    is_powerof_two,\n'
-    '    pad,\n'
-    ')'
-)
-new = (
-    'from kornia.geometry.transform.pyramid import (\n'
-    '    PyrUp,\n'
-    '    build_laplacian_pyramid,\n'
-    '    build_pyramid,\n'
-    '    find_next_powerof_two,\n'
-    '    is_powerof_two,\n'
-    ')\n'
-    'from torch.nn.functional import pad'
-)
+    old = (
+        'from kornia.geometry.transform.pyramid import (\n'
+        '    PyrUp,\n'
+        '    build_laplacian_pyramid,\n'
+        '    build_pyramid,\n'
+        '    find_next_powerof_two,\n'
+        '    is_powerof_two,\n'
+        '    pad,\n'
+        ')'
+    )
+    new = (
+        'from kornia.geometry.transform.pyramid import (\n'
+        '    PyrUp,\n'
+        '    build_laplacian_pyramid,\n'
+        '    build_pyramid,\n'
+        '    find_next_powerof_two,\n'
+        '    is_powerof_two,\n'
+        ')\n'
+        'from torch.nn.functional import pad'
+    )
     if old in content:
         open(target, 'w').write(content.replace(old, new))
         print('[ltx23-provision] pyramid_blending.py patched')
