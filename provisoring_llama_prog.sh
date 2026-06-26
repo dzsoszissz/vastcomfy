@@ -15,5 +15,7 @@ export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
 export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning.log}"
 exec > >(tee -a "$LOG_FILE") 2>&1
-hf download hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q6_K.gguf
+supervisecrl stop llama
+hf download unsloth/Qwen3.6-35B-A3B-GGUF  --include "*Q6_K*"
+supervisecrl start llama
 log "done"
