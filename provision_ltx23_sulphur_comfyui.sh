@@ -186,7 +186,12 @@ else
 fi
 log "patch ComfyUI-LTXVideo pyramid_blending.py kornia compatibility"
 python3 << 'PYEOF'
-content = open('ComfyUI-LTXVideo/pyramid_blending.py').read()
+import os
+target = os.path.join(os.getcwd(), 'ComfyUI-LTXVideo', 'pyramid_blending.py')
+if not os.path.isfile(target):
+    print('[ltx23-provision] pyramid_blending.py not found - skip')
+else:
+    content = open(target).read()
 old = (
     'from kornia.geometry.transform.pyramid import (\n'
     '    PyrUp,\n'
@@ -207,11 +212,11 @@ new = (
     ')\n'
     'from torch.nn.functional import pad'
 )
-if old in content:
-    open('ComfyUI-LTXVideo/pyramid_blending.py', 'w').write(content.replace(old, new))
-    print('[ltx23-provision] pyramid_blending.py patched')
-else:
-    print('[ltx23-provision] pyramid_blending.py already patched or not found')
+    if old in content:
+        open(target, 'w').write(content.replace(old, new))
+        print('[ltx23-provision] pyramid_blending.py patched')
+    else:
+        print('[ltx23-provision] pyramid_blending.py already patched or pattern not found')
 PYEOF
 
 if [ -f ComfyUI-KJNodes/requirements.txt ]; then
@@ -225,24 +230,5 @@ log "restart comfyui if supervisor program exists"
 if command -v supervisorctl >/dev/null 2>&1; then
   supervisorctl status | awk '{print $1}' | grep -Ei 'comfy|comfyui' | while read -r svc; do supervisorctl restart "$svc" || true; done
 fi
-
-log "download Ingredients workflow graph format"
-COMFY_PORT="${COMFY_PORT:-18188}"
-COMFY_URL="http://127.0.0.1:${COMFY_PORT}"
-INGREDIENTS_GRAPH="$WORKFLOW_DIR/ingredients_graph.json"
-INGREDIENTS_API="$WORKFLOW_DIR/ingredients_api.json"
-curl_file "https://raw.githubusercontent.com/Lightricks/ComfyUI-LTXVideo/master/example_workflows/2.3/LTX-2.3_ICLoRA_Ingredients_Single_Stage_Distilled.json" "$INGREDIENTS_GRAPH"
-
-log "wait for ComfyUI then convert Ingredients workflow to API format"
-for i in $(seq 1 60); do
-  if curl -s --connect-timeout 2 "$COMFY_URL/history" > /dev/null 2>&1; then
-    log "ComfyUI ready"
-    break
-  fi
-  sleep 2
-done
-curl -s -X POST "$COMFY_URL/workflow/convert"   -H "Content-Type: application/json"   -d @"$INGREDIENTS_GRAPH"   -o "$INGREDIENTS_API" || fail "Failed to convert Ingredients workflow to API format"
-[ -s "$INGREDIENTS_API" ] || fail "Ingredients API workflow empty: $INGREDIENTS_API"
-log "Ingredients API workflow saved: $INGREDIENTS_API"
 
 log "done"
