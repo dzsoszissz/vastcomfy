@@ -15,6 +15,5 @@ export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
 export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning.log}"
 exec > >(tee -a "$LOG_FILE") 2>&1
-hf auth token
 hf download dzsoszmissz/Huihui-Qwen3.6-35B-A3B-abliterated-bet-GGUF --include "*Q6_K*" 
 log "done"
