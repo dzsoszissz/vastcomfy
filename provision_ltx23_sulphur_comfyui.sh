@@ -48,8 +48,9 @@ hf_file() {
   if [ -s "$dest" ]; then log "exists: $dest"; return 0; fi
   mkdir -p "$(dirname "$dest")"
   log "download: $repo :: $src -> $dest"
+  log   "$HFCLI" download "$repo" "$src" --repo-type model --token "$HF_TOKEN" --local-dir "$(dirname "$dest")"
   "$HFCLI" download "$repo" "$src" --repo-type model --token "$HF_TOKEN" --local-dir "$(dirname "$dest")" >/tmp/msr_hf.log 2>&1
-  [ -s "$dest" ] || fail "download failed: $dest"
+  [ -s "$(dirname "$dest")" ] || fail "download failed: $dest"
 }
 
 # 1. Custom nodes (MSR plugin + stabil alkatrészek)
@@ -65,13 +66,13 @@ done
 # 2. Requirements & Kornia patch (kizárólag LTXVideo-ra fókuszál)
 log "installing requirements & patching kornia"
 for dir in KJNodes LTXVideo; do
+  log $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
   [ -f "$CUSTOM_DIR/$dir/requirements.txt" ] && $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
 done
-
+log "start python"
 python3 << 'PYEOF'
 import os
-target = f"{os.getcwd()}/custom_nodes/ComfyUI-LTXVideo/pyramid_blending.py"
-if not os.path.isfile(target): return
+target = f"/workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/pyramid_blending.py"
 c = open(target).read()
 old = "from kornia.geometry.transform.pyramid import (\n    PyrUp,\n    build_laplacian_pyramid,\n    build_pyramid,\n    find_next_powerof_two,\n    is_powerof_two,\n    pad,\n)"
 new = "from kornia.geometry.transform.pyramid import (\n    PyrUp,\n    build_laplacian_pyramid,\n    build_pyramid,\n    find_next_powerof_two,\n    is_powerof_two,\n)\nfrom torch.nn.functional import pad"
