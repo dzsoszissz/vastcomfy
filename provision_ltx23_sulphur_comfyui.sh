@@ -61,6 +61,10 @@ for repo in \
     https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
+  if [ -f "$CUSTOM_DIR/$name/requirements.txt" ]; then
+    log "install requirements: $CUSTOM_DIR/$name/requirements.txt"
+    $PIP install -r "$CUSTOM_DIR/$name/requirements.txt" >/tmp/ltx23_node_req.log 2>&1 || { cat /tmp/ltx23_node_req.log >&2; fail "node requirements install failed: $dest"; }
+  fi
 done
 
 # 2. Requirements & Kornia patch (kizárólag LTXVideo-ra fókuszál)
@@ -84,6 +88,7 @@ log "downloading models (MSR compatible)"
 hf_file "SulphurAI/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
 hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/distilled.safetensors"
 hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma_prompt.safetensors"
+hf_file "LiconStudio/LTX-2.3-Multiple-Subject-Reference" "LTX-2.3-Licon-MSR-V1.safetensors" "$LORA_DIR/LTX-2.3"
 hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_encoder.fp4.mixed.safetensors"
 hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ingredients.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/spatial.x2.11.safetensors"
