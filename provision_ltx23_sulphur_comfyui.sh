@@ -1,8 +1,8 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-log() { echo "[ltx23-provision] $*"; }
-fail() { echo "[ltx23-provision][FAIL] $*" >&2; exit 1; }
+log() { echo "[ltx23-msr] $*"; }
+fail() { echo "[ltx23-msr][FAIL] $*" >&2; exit 1; }
 
 : "${HF_TOKEN:?HF_TOKEN is required}"
 case "$HF_TOKEN" in hf_*) ;; *) fail "HF_TOKEN must start with hf_" ;; esac
@@ -11,224 +11,100 @@ export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-/workspace/.cache/huggingface/hub}"
 export HF_XET_CACHE="${HF_XET_CACHE:-/workspace/.cache/huggingface/xet}"
 export HF_ASSETS_CACHE="${HF_ASSETS_CACHE:-/workspace/.cache/huggingface/assets}"
-export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
-export HF_XET_NUM_CONCURRENT_RANGE_GETS="${HF_XET_NUM_CONCURRENT_RANGE_GETS:-64}"
-export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
-export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-30}"
-export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-0}"
-export HF_HUB_DISABLE_IMPLICIT_TOKEN="${HF_HUB_DISABLE_IMPLICIT_TOKEN:-0}"
-export HF_HUB_DISABLE_PROGRESS_BARS="${HF_HUB_DISABLE_PROGRESS_BARS:-1}"
-export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
-export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
+export HF_XET_HIGH_PERFORMANCE="1"
+export HF_XET_NUM_CONCURRENT_RANGE_GETS="64"
+export HF_HUB_DOWNLOAD_TIMEOUT="120"
+export HF_HUB_ETAG_TIMEOUT="30"
+export HF_HUB_DISABLE_XET="0"
+export DO_NOT_TRACK="1"
 
 COMFYUI_ROOT="${COMFYUI_ROOT:-/workspace/ComfyUI}"
-CKPT_DIR="${COMFYUI_CHECKPOINT_DIR:-$COMFYUI_ROOT/models/checkpoints}"
-LORA_DIR="${COMFYUI_LORA_DIR:-$COMFYUI_ROOT/models/loras}"
-TEXT_DIR="${COMFYUI_TEXT_ENCODER_DIR:-$COMFYUI_ROOT/models/text_encoders}"
-UPSCALE_DIR="${COMFYUI_LATENT_UPSCALE_DIR:-$COMFYUI_ROOT/models/latent_upscale_models}"
-WORKFLOW_DIR="${COMFYUI_WORKFLOW_DIR:-$COMFYUI_ROOT/user/default/workflows}"
-INPUT_DIR="${COMFYUI_INPUT_DIR:-$COMFYUI_ROOT/input}"
-OUTPUT_DIR="${COMFYUI_OUTPUT_DIR:-$COMFYUI_ROOT/output}"
-TEMP_DIR="${COMFYUI_TEMP_DIR:-$COMFYUI_ROOT/temp}"
+CKPT_DIR="$COMFYUI_ROOT/models/checkpoints"
+LORA_DIR="$COMFYUI_ROOT/models/loras"
+TEXT_DIR="$COMFYUI_ROOT/models/text_encoders"
+UPSCALE_DIR="$COMFYUI_ROOT/models/latent_upscale_models"
+WORKFLOW_DIR="$COMFYUI_ROOT/user/default/workflows"
 CUSTOM_DIR="$COMFYUI_ROOT/custom_nodes"
-STAGE_ROOT="/workspace/.ltx23_stage"
-LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning_ltx23.log}"
+STAGE_ROOT="/workspace/.ltx23_msr_stage"
+LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning_ltx23_msr.log}"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
-
 [ -d "$COMFYUI_ROOT" ] || fail "ComfyUI root not found: $COMFYUI_ROOT"
-mkdir -p "$CKPT_DIR" "$LORA_DIR" "$TEXT_DIR" "$UPSCALE_DIR" "$WORKFLOW_DIR" "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR" "$CUSTOM_DIR" "$STAGE_ROOT" "$HF_HOME" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$HF_ASSETS_CACHE"
+mkdir -p "$CKPT_DIR" "$LORA_DIR" "$TEXT_DIR" "$UPSCALE_DIR" "$WORKFLOW_DIR" "$CUSTOM_DIR" "$STAGE_ROOT"
 
-FREE_GB="$(df -BG /workspace | awk 'NR==2 {gsub(/G/,"",$4); print $4}')"
-[ "${FREE_GB:-0}" -ge 2 ] || fail "free disk below 60GB on /workspace: ${FREE_GB:-0}GB"
-
-PY="/venv/main/bin/python"
-[ -x "$PY" ] || PY="/opt/venv/bin/python"
-[ -x "$PY" ] || PY="$(command -v python3 || true)"
-[ -n "$PY" ] || fail "python3 not found"
-
+PY="/venv/main/bin/python3"
+[ -x "$PY" ] || PY="$(command -v python3)"
 PIP="$PY -m pip"
-log "install/update huggingface_hub hf_xet"
-$PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/ltx23_pip_hf.log 2>&1 || { cat /tmp/ltx23_pip_hf.log >&2; fail "pip install huggingface_hub[hf_xet] failed"; }
+
+log "install/update huggingface_hub & hf_xet"
+$PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
 
 HFCLI="$(dirname "$PY")/hf"
-[ -x "$HFCLI" ] || HFCLI="$(command -v hf || true)"
-[ -x "$HFCLI" ] || HFCLI="$(command -v huggingface-cli || true)"
+[ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
 [ -x "$HFCLI" ] || fail "hf cli not found"
 
 hf_file() {
   local repo="$1" src="$2" dest="$3"
-  local stage src_path
-  stage="$STAGE_ROOT/$(echo "$repo/$src" | tr '/:' '__')"
-  src_path="$stage/$src"
-  if [ -s "$dest" ]; then
-    log "exists: $dest"
-    return 0
-  fi
-  rm -rf "$stage"
-  mkdir -p "$stage" "$(dirname "$dest")"
-  log "download: $repo :: $src"
-  "$HFCLI" download "$repo" "$src" --repo-type model --token "$HF_TOKEN" --local-dir "$stage" >/tmp/ltx23_hf.log 2>&1 || { cat /tmp/ltx23_hf.log >&2; fail "hf download failed: $repo :: $src"; }
-  [ -s "$src_path" ] || fail "downloaded file missing: $src_path"
-  mv -f "$src_path" "$dest"
-  rm -rf "$stage"
-  [ -s "$dest" ] || fail "target missing after move: $dest"
-}
-
-git_install_node() {
-  local repo_url="$1" dest="$2"
-  if [ -d "$dest/.git" ]; then
-    log "custom node exists: $dest"
-  else
-    rm -rf "$dest"
-    log "clone custom node: $repo_url"
-    git clone --depth 1 "$repo_url" "$dest" || fail "git clone failed: $repo_url"
-  fi
-  if [ -f "$dest/requirements.txt" ]; then
-    log "install requirements: $dest/requirements.txt"
-    $PIP install -r "$dest/requirements.txt" >/tmp/ltx23_node_req.log 2>&1 || { cat /tmp/ltx23_node_req.log >&2; fail "node requirements install failed: $dest"; }
-  fi
-}
-
-curl_file() {
-  local url="$1" dest="$2"
-  if [ -s "$dest" ]; then
-    log "exists: $dest"
-    return 0
-  fi
+  if [ -s "$dest" ]; then log "exists: $dest"; return 0; fi
   mkdir -p "$(dirname "$dest")"
-  log "download: $url"
-  curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 "$url" -o "$dest.tmp" || fail "curl download failed: $url"
-  [ -s "$dest.tmp" ] || fail "downloaded temp file is empty: $dest.tmp"
-  mv -f "$dest.tmp" "$dest"
-  [ -s "$dest" ] || fail "target missing after curl: $dest"
+  log "download: $repo :: $src -> $dest"
+  "$HFCLI" download "$repo" "$src" --repo-type model --token "$HF_TOKEN" --local-dir "$(dirname "$dest")" >/tmp/msr_hf.log 2>&1
+  [ -s "$dest" ] || fail "download failed: $dest"
 }
 
-log "update ComfyUI core"
-cd "$COMFYUI_ROOT"
-if [ -d ".git" ]; then
-  git fetch --depth=1 origin master
-  git reset --hard origin/master
-  $PIP install -r requirements.txt >/tmp/ltx23_comfy_req.log 2>&1 || { cat /tmp/ltx23_comfy_req.log >&2; fail "ComfyUI requirements install failed"; }
-fi
-cd -
-
-log "install ComfyUI-LTXVideo custom nodes"
-git_install_node "https://github.com/Lightricks/ComfyUI-LTXVideo.git" "$CUSTOM_DIR/ComfyUI-LTXVideo"
-
-log "download models"
-hf_file "SulphurAI/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
-hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors"
-hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors"
-hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors"
-hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
-hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ltxv/ltx2/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors"
-hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors"
-
-log "download workflows"
-curl_file "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_ltx2_3_i2v.json" "$WORKFLOW_DIR/video_ltx2_3_i2v.json"
-curl_file "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_ltx2_3_t2v.json" "$WORKFLOW_DIR/video_ltx2_3_t2v.json"
-curl_file "https://raw.githubusercontent.com/Comfy-Org/Subgraph-Blueprints/main/First-Last-Frame%20to%20Video%20%28LTX-2.3%29.json" "$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json"
-
-log "validate files"
-for f in \
-  "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors" \
-  "$LORA_DIR/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" \
-  "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" \
-  "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors" \
-  "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors" \
-  "$LORA_DIR/ltxv/ltx2/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" \
-  "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors" \
-  "$WORKFLOW_DIR/video_ltx2_3_i2v.json" \
-  "$WORKFLOW_DIR/video_ltx2_3_t2v.json" \
-  "$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json"; do
-  [ -s "$f" ] || fail "missing/empty: $f"
+# 1. Custom nodes (MSR plugin + stabil alkatrészek)
+log "installing custom nodes (MSR focused)"
+for repo in \
+    https://github.com/kijai/ComfyUI-KJNodes.git \
+    https://github.com/Lightricks/ComfyUI-LTXVideo.git \
+    https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
+  name=$(basename "$repo" .git)
+  [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
 done
 
-cat > /workspace/ltx23_ready.json <<MANIFEST
-{
-  "status": "ready",
-  "checkpoint": "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors",
-  "lora_distilled": "$LORA_DIR/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
-  "lora_prompt": "$LORA_DIR/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors",
-  "text_encoder": "$TEXT_DIR/gemma_3_12B_it_fp4_mixed.safetensors",
-  "spatial_upscaler": "$UPSCALE_DIR/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-  "temporal_upscaler": "$UPSCALE_DIR/ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
-  "workflow_i2v": "$WORKFLOW_DIR/video_ltx2_3_i2v.json",
-  "workflow_t2v": "$WORKFLOW_DIR/video_ltx2_3_t2v.json",
-  "workflow_flf": "$WORKFLOW_DIR/First-Last-Frame to Video (LTX-2.3).json",
-  "log": "$LOG_FILE"
-}
-MANIFEST
+# 2. Requirements & Kornia patch (kizárólag LTXVideo-ra fókuszál)
+log "installing requirements & patching kornia"
+for dir in KJNodes LTXVideo; do
+  [ -f "$CUSTOM_DIR/$dir/requirements.txt" ] && $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
+done
 
-COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-
-cd "$COMFY_DIR"
-mkdir -p custom_nodes
-cd custom_nodes
-
-if [ ! -d ComfyUI-KJNodes ]; then
-  git clone --depth=1 https://github.com/kijai/ComfyUI-KJNodes.git
-else
-  cd ComfyUI-KJNodes
-  git fetch --depth=1 origin main
-  git reset --hard origin/main
-  cd ..
-fi
-if [ ! -d ComfyUI-LTXVideo ]; then
-  git clone --depth=1 https://github.com/Lightricks/ComfyUI-LTXVideo.git
-else
-  cd ComfyUI-LTXVideo
-  git fetch --depth=1 origin master
-  git reset --hard origin/master
-  cd ..
-fi
-log "patch ComfyUI-LTXVideo pyramid_blending.py kornia compatibility"
 python3 << 'PYEOF'
 import os
-target = os.path.join(os.getcwd(), 'ComfyUI-LTXVideo', 'pyramid_blending.py')
-if not os.path.isfile(target):
-    print('[ltx23-provision] pyramid_blending.py not found - skip')
-else:
-    content = open(target).read()
-    old = (
-        'from kornia.geometry.transform.pyramid import (\n'
-        '    PyrUp,\n'
-        '    build_laplacian_pyramid,\n'
-        '    build_pyramid,\n'
-        '    find_next_powerof_two,\n'
-        '    is_powerof_two,\n'
-        '    pad,\n'
-        ')'
-    )
-    new = (
-        'from kornia.geometry.transform.pyramid import (\n'
-        '    PyrUp,\n'
-        '    build_laplacian_pyramid,\n'
-        '    build_pyramid,\n'
-        '    find_next_powerof_two,\n'
-        '    is_powerof_two,\n'
-        ')\n'
-        'from torch.nn.functional import pad'
-    )
-    if old in content:
-        open(target, 'w').write(content.replace(old, new))
-        print('[ltx23-provision] pyramid_blending.py patched')
-    else:
-        print('[ltx23-provision] pyramid_blending.py already patched or pattern not found')
+target = f"{os.getcwd()}/custom_nodes/ComfyUI-LTXVideo/pyramid_blending.py"
+if not os.path.isfile(target): return
+c = open(target).read()
+old = "from kornia.geometry.transform.pyramid import (\n    PyrUp,\n    build_laplacian_pyramid,\n    build_pyramid,\n    find_next_powerof_two,\n    is_powerof_two,\n    pad,\n)"
+new = "from kornia.geometry.transform.pyramid import (\n    PyrUp,\n    build_laplacian_pyramid,\n    build_pyramid,\n    find_next_powerof_two,\n    is_powerof_two,\n)\nfrom torch.nn.functional import pad"
+if old in c: open(target, 'w').write(c.replace(old, new))
 PYEOF
 
-if [ -f ComfyUI-KJNodes/requirements.txt ]; then
-  "$PYTHON_BIN" -m pip install -r ComfyUI-KJNodes/requirements.txt
-fi
-if [ -f ComfyUI-LTXVideo/requirements.txt ]; then
-  "$PYTHON_BIN" -m pip install -r ComfyUI-LTXVideo/requirements.txt
-fi
-ln -sf "$OUTPUT_DIR/latents" "$INPUT_DIR/latents"
-log "restart comfyui if supervisor program exists"
-if command -v supervisorctl >/dev/null 2>&1; then
-  supervisorctl status | awk '{print $1}' | grep -Ei 'comfy|comfyui' | while read -r svc; do supervisorctl restart "$svc" || true; done
-fi
+# 3. Modellek (LTX 2.3 alap, distilled, gemma prompt, ingredients, upscalerok)
+log "downloading models (MSR compatible)"
+hf_file "SulphurAI/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
+hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/distilled.safetensors"
+hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma_prompt.safetensors"
+hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_encoder.fp4.mixed.safetensors"
+hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ingredients.safetensors"
+hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/spatial.x2.11.safetensors"
+hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/temporal.x2.10.safetensors"
 
-log "done"
+# 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
+log "downloading workflow templates"
+for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video (LTX-2.3).json"; do
+  curl -sLO --retry 3 https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/"$wf" || true
+done
+
+# 5. Manifest & indítás
+cat > /workspace/ltx23_msr_ready.json << EOF
+{
+  "status": "ready",
+  "model": "LiconStudio/LTX-2.3-Multiple-Subject-Reference",
+  "plugin": "ComfyUI-Licon-MSR",
+  "log": "$LOG_FILE"
+}
+EOF
+
+if command -v supervisorctl >/dev/null 2>&1; then
+  supervisorctl restart comfyui || true
+fi
+log "done. Old spec removed, MSR pipeline active."
