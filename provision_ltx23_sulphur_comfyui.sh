@@ -96,7 +96,7 @@ PYEOF
 log "downloading models (MSR compatible)"
 #hf_file "SulphurAI/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
 #hf_file "szwagros/ltx-2.3-22b-distilled-1.1-bf16-fp8" "ltx-2.3-22b-distilled-1.1_transformer_fp8.safetensors" "$CKPT_DIR/ltx-2.3-22b-distilled-fp8.safetensors"
-hf_file "Lightricks/LTX-2.3-fp8" "ltx-2.3-22b-distilled-fp8.safetensors" "$CKPT_DIR/ltx-2.3-22b-distilled-fp8.safetensors"
+#hf_file "Lightricks/LTX-2.3-fp8" "ltx-2.3-22b-distilled-fp8.safetensors" "$CKPT_DIR/ltx-2.3-22b-distilled-fp8.safetensors"
 hf_file "coolthor/Sulphur-2-distilled-NVFP4" "ltx_full_vae.safetensors" "$VAE_DIR/ltx_full_vae.safetensors"
 hf_file "coolthor/Sulphur-2-distilled-NVFP4" "sulphur_distil_nvfp4.safetensors" "$DIFFM_DIR/sulphur_distil_nvfp4.safetensors"
 hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/distilled.safetensors"
