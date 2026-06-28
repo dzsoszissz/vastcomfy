@@ -109,7 +109,7 @@ for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video
   curl -sLO --retry 3 https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/"$wf" || true
 done
 
-curl -sLO --retry 3 https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/LTX-2.3_MSR_sample_workflow_V1_working.json -o /workspace/ComfyUI/user/default/workflows/LTX-2.3_MSR_sample_workflow_V1_working.json
+curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/LTX-2.3_MSR_sample_workflow_V1_working.json -o /workspace/ComfyUI/user/default/workflows/LTX-2.3_MSR_sample_workflow_V1_working.json
 # 5. Manifest & indítás
 cat > /workspace/ltx23_msr_ready.json << EOF
 {
@@ -122,5 +122,6 @@ EOF
 
 if command -v supervisorctl >/dev/null 2>&1; then
   supervisorctl restart comfyui || true
+  supervisorctl restart api-wrapper || true
 fi
 log "done. Old spec removed, MSR pipeline active."
