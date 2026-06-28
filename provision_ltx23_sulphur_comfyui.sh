@@ -44,7 +44,7 @@ $PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/msr_pip.log 2>&1 
 #2. Függőségek: CSAK a szükségesek, verzióra kötve (No more conflicts!)
 log "Cleaning environment and installing strict dependencies"
 $PIP uninstall -y kornia kornia-rs || true
-$PIP install --no-cache-dir kornia==0.7.2 kornia-rs==0.1.14 torch torchvision torchaudio
+$PIP install  --upgrade --force-reinstall --no-cache-dir kornia==0.7.2 kornia-rs==0.1.14 torch torchvision torchaudio
 
 HFCLI="$(dirname "$PY")/hf"
 [ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
