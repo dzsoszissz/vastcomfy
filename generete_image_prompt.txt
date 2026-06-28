@@ -1,0 +1,5 @@
+A megadott referenciaképen látható karakter felhasználásával készíts egy teljes testű karaktermodelllapot (átmeneti referencia) UGYANARRÓL a karakterről. Az arc, a frizura, a testarányok, a ruházat, a színek és az összes kiegészítő pontosan megegyezzen a referenciával – ne tervezz át semmit.
+
+Elrendezés: **négy** egymás melletti nézet egy lapon – **közeli portré,** elölnézet, oldalnézet és hátulnézet – egyenletesen elosztva, konzisztens méretarányban, ugyanaz a karakter mind a **négy** nézetben.
+
+Minden nézet: teljes test látható tetőtől talpig, semleges álló póz, éles fókusz. Háttér: sima, tiszta fehér, zökkenőmentes stúdióháttér, egyenletes megvilágítással, padlóárnyékok nélkül. Világítás és renderelési stílus: illeszkedjen a referenciaképhez. Negatív: levágott vagy levágott test, megváltozott arc, átalakított ruházat, eltérő színek, extra végtagok, deformált kezek, inkonzisztens design a nézetek között, zsúfolt háttér, szöveg, vízjel. Képarány: 16:9
