@@ -40,7 +40,9 @@ log "install/update huggingface_hub & hf_xet"
 $PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
 
 # --- KÖTELEZŐ KORNIA VERZIÓ (Módosítás vége) ---
-$PIP install kornia==0.7.2 kornia-rs==0.1.14
+#pip install kornia==0.7.2 --upgrade --force-reinstall --no-cache-dir
+$PIP install kornia==0.7.2 --upgrade --force-reinstall --no-cache-dir
+$PIP install kornia-rs==0.1.14 --upgrade --force-reinstall --no-cache-dir
 
 HFCLI="$(dirname "$PY")/hf"
 [ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
