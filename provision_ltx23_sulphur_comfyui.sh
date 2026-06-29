@@ -65,6 +65,7 @@ hf_file() {
 # 1. Custom nodes (MSR plugin + stabil alkatrészek)
 log "installing custom nodes (MSR focused)"
 for repo in \
+    https://github.com/Saganaki22/ComfyUI-KugelAudio.git
     https://github.com/kijai/ComfyUI-KJNodes.git \
     https://github.com/Lightricks/ComfyUI-LTXVideo.git \
     https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
