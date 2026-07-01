@@ -54,7 +54,7 @@
         "Node name for S&R": "LowVRAMCheckpointLoader"
       },
       "widgets_values": [
-        "ltx-2.3-22b-distilled-fp8.safetensors"
+        "ltx-2.3-22b-dev-fp8.safetensors"
       ]
     },
     {
