@@ -42,7 +42,7 @@ PIP="$PY -m pip"
 
 log "install/update huggingface_hub & hf_xet"
 $PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
-
+$PIP install "jiwer<3.0"
 # --- KÖTELEZŐ KORNIA VERZIÓ (Módosítás vége) ---
 #pip install kornia==0.7.2 --upgrade --force-reinstall --no-cache-dir
 #2. Függőségek: CSAK a szükségesek, verzióra kötve (No more conflicts!)
