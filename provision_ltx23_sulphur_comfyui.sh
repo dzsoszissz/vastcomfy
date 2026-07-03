@@ -117,7 +117,7 @@ hf_file "Sikaworld1990/gemma-3-12b-qat-abliterated-sikaworld-fp4-ltx2" "Gemma3-1
 #hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ingredients.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/spatial.x2.11.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/temporal.x2.10.safetensors"
-hf_file "lodestones/Chroma1-HD" "Chroma1-HD.safetensors" "$DIFF_DIR/Chroma1-HD.safetensors"
+hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
 hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
 hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
 hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
