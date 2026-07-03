@@ -120,6 +120,7 @@ for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video
 done
 
 curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/LTX-2.3_MSR_sample_workflow_V1_working.json -o /workspace/ComfyUI/user/default/workflows/LTX-2.3_MSR_sample_workflow_V1_working.json
+curl -s https://raw.githubusercontent.com/AIFSH/F5-TTS-ComfyUI/refs/heads/main/doc/base_workflow.json -o /workspace/ComfyUI/user/default/workflows/base_TTS_workflow.json
 # 5. Manifest & indítás
 cat > /workspace/ltx23_msr_ready.json << EOF
 {
