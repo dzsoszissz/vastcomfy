@@ -27,6 +27,8 @@ TEXT_DIR="$COMFYUI_ROOT/models/text_encoders"
 UPSCALE_DIR="$COMFYUI_ROOT/models/latent_upscale_models"
 WORKFLOW_DIR="$COMFYUI_ROOT/user/default/workflows"
 CUSTOM_DIR="$COMFYUI_ROOT/custom_nodes"
+DIFF_DIR="$COMFYUI_ROOT/models/diffusion_models"
+
 STAGE_ROOT="/workspace/.ltx23_msr_stage"
 LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning_ltx23_msr.log}"
 
@@ -69,6 +71,9 @@ for repo in \
     https://github.com/kijai/ComfyUI-KJNodes.git \
     https://github.com/Lightricks/ComfyUI-LTXVideo.git \
     https://github.com/AIFSH/F5-TTS-ComfyUI.git \
+    https://github.com/gseth/ControlAltAI-Nodes.git \
+    https://github.com/kk8bit/KayTool.git \
+    https://github.com/gseth/ControlAltAI-Nodes.git \
     https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
@@ -115,6 +120,8 @@ hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UP
 hf_file "lodestones/Chroma1-HD" "Chroma1-HD.safetensors" "$DIFF_DIR/Chroma1-HD.safetensors"
 hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
 hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
+hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
+hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
 log "downloading workflow templates"
