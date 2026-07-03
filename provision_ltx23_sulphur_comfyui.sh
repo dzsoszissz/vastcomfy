@@ -106,7 +106,7 @@ hf_file "Winnougan/Sulphur-2-LTX-2.3" "sulphur_distill_fp8.safetensors" "$CKPT_D
 #hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/distilled.safetensors"
 #hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma_prompt.safetensors"
 hf_file "LiconStudio/LTX-2.3-Multiple-Subject-Reference" "LTX-2.3-Licon-MSR-V1.safetensors" "$LORA_DIR/LTX-2.3"
-hf_file "Maxdorger29/f5-tts-hungarian" "model_last_final.safetensors" "$LORADIR/../AIFSH/model_last_final.safetensors"
+hf_file "Maxdorger29/f5-tts-hungarian" "model_last_final.safetensors" "$LORA_DIR/../AIFSH/model_last_final.safetensors"
 #hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_encoder.fp4.mixed.safetensors"
 hf_file "Sikaworld1990/gemma-3-12b-qat-abliterated-sikaworld-fp4-ltx2" "Gemma3-12B-NVFP4-Sikaworld-Pure.safetensors" "$TEXT_DIR/Gemma3-12B-NVFP4-Sikaworld-Pure.safetensors"
 #hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ingredients.safetensors"
