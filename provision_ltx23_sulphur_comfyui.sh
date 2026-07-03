@@ -50,6 +50,13 @@ log "Cleaning environment and installing strict dependencies"
 $PIP uninstall -y kornia kornia-rs || true
 $PIP install  --upgrade --force-reinstall --no-cache-dir kornia==0.7.2 kornia-rs==0.1.14 torch torchvision torchaudio
 
+# --- DFloat11 runtime deps (UnCanny DF11 kepgeneralas betoltesehez) ---
+log "install DFloat11 runtime deps"
+$PIP install --no-cache-dir dfloat11 dahuffman >/tmp/msr_df11.log 2>&1 || { cat /tmp/msr_df11.log >&2; fail "dfloat11 deps install failed"; }
+$PIP install --no-cache-dir cupy-cuda13x >/tmp/msr_cupy.log 2>&1 || $PIP install --no-cache-dir cupy-cuda12x >>/tmp/msr_cupy.log 2>&1 || { cat /tmp/msr_cupy.log >&2; fail "cupy install failed"; }
+$PIP install --no-cache-dir opencv-python-headless >/tmp/msr_cv2.log 2>&1 || { cat /tmp/msr_cv2.log >&2; fail "opencv install failed"; }
+$PY -c "import dfloat11, cupy" >/dev/null 2>&1 || fail "dfloat11/cupy import check failed"
+
 HFCLI="$(dirname "$PY")/hf"
 [ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
 [ -x "$HFCLI" ] || fail "hf cli not found"
@@ -74,6 +81,7 @@ for repo in \
     https://github.com/gseth/ControlAltAI-Nodes.git \
     https://github.com/kk8bit/KayTool.git \
     https://github.com/gseth/ControlAltAI-Nodes.git \
+    https://github.com/mingyi456/ComfyUI-DFloat11-Extended.git \
     https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
@@ -120,8 +128,6 @@ hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UP
 hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
 hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
 hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
-hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
-hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
 log "downloading workflow templates"
