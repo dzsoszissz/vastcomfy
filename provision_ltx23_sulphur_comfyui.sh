@@ -50,13 +50,6 @@ log "Cleaning environment and installing strict dependencies"
 $PIP uninstall -y kornia kornia-rs || true
 $PIP install  --upgrade --force-reinstall --no-cache-dir kornia==0.7.2 kornia-rs==0.1.14 torch torchvision torchaudio
 
-# --- DFloat11 runtime deps (UnCanny DF11 kepgeneralas betoltesehez) ---
-log "install DFloat11 runtime deps"
-$PIP install --no-cache-dir dfloat11 dahuffman >/tmp/msr_df11.log 2>&1 || { cat /tmp/msr_df11.log >&2; fail "dfloat11 deps install failed"; }
-$PIP install --no-cache-dir cupy-cuda13x >/tmp/msr_cupy.log 2>&1 || $PIP install --no-cache-dir cupy-cuda12x >>/tmp/msr_cupy.log 2>&1 || { cat /tmp/msr_cupy.log >&2; fail "cupy install failed"; }
-$PIP install --no-cache-dir opencv-python-headless >/tmp/msr_cv2.log 2>&1 || { cat /tmp/msr_cv2.log >&2; fail "opencv install failed"; }
-$PY -c "import dfloat11, cupy" >/dev/null 2>&1 || fail "dfloat11/cupy import check failed"
-
 HFCLI="$(dirname "$PY")/hf"
 [ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
 [ -x "$HFCLI" ] || fail "hf cli not found"
@@ -81,8 +74,6 @@ for repo in \
     https://github.com/gseth/ControlAltAI-Nodes.git \
     https://github.com/kk8bit/KayTool.git \
     https://github.com/gseth/ControlAltAI-Nodes.git \
-    https://github.com/mingyi456/ComfyUI-DFloat11-Extended.git \
-    https://github.com/PaoloC68/ComfyUI-PuLID-Flux-Chroma.git \
     https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
@@ -129,8 +120,9 @@ hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UP
 hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
 hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
 hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
-hf_file "guozinan/PuLID" "pulid_flux_v0.9.1.safetensors" "$COMFYUI_ROOT/models/pulid/pulid_flux_v0.9.1.safetensors"
-
+hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetensors" "$CKPT_DIR/Qwen-Rapid-AIO-NSFW-v23.safetensors"
+hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
+hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
 log "downloading workflow templates"
@@ -140,16 +132,6 @@ done
 
 curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/LTX-2.3_MSR_sample_workflow_V1_working.json -o /workspace/ComfyUI/user/default/workflows/LTX-2.3_MSR_sample_workflow_V1_working.json
 curl -s https://raw.githubusercontent.com/AIFSH/F5-TTS-ComfyUI/refs/heads/main/doc/base_workflow.json -o /workspace/ComfyUI/user/default/workflows/base_TTS_workflow.json
-
-# antelopev2 (InsightFace face detection) - github blokkolt, ezért HF-ről
-ANTELOPE_DIR="$COMFYUI_ROOT/models/insightface/models"
-if [ ! -s "$ANTELOPE_DIR/antelopev2/scrfd_10g_bnkps.onnx" ]; then
-  mkdir -p "$ANTELOPE_DIR"
-  "$HFCLI" download vladmandic/insightface-faceanalysis antelopev2.zip --repo-type model --local-dir "$ANTELOPE_DIR" >/tmp/msr_antelope.log 2>&1 || fail "antelopev2 download failed"
-  unzip -o "$ANTELOPE_DIR/antelopev2.zip" -d "$ANTELOPE_DIR" >/tmp/msr_antelope_unzip.log 2>&1 || fail "antelopev2 unzip failed"
-  [ -s "$ANTELOPE_DIR/antelopev2/scrfd_10g_bnkps.onnx" ] || fail "antelopev2 detection model missing after unzip"
-fi
-
 # 5. Manifest & indítás
 cat > /workspace/ltx23_msr_ready.json << EOF
 {
