@@ -67,14 +67,15 @@ hf_file() {
 # 1. Custom nodes (MSR plugin + stabil alkatrészek)
 # https://github.com/Saganaki22/ComfyUI-KugelAudio.git \
 log "installing custom nodes (MSR focused)"
+# Custom node repók feladatonként csoportosítva:
+#   KÖZÖS/SEGÉD: KJNodes, KayTool
+#   KÉP (Flux/Chroma): ControlAltAI-Nodes
+#   VIDEÓ (LTX-2.3): ComfyUI-LTXVideo, ComfyUI-Licon-MSR
+#   AUDIO (F5-TTS): F5-TTS-ComfyUI
 for repo in \
-    https://github.com/kijai/ComfyUI-KJNodes.git \
     https://github.com/Lightricks/ComfyUI-LTXVideo.git \
-    https://github.com/AIFSH/F5-TTS-ComfyUI.git \
-    https://github.com/gseth/ControlAltAI-Nodes.git \
-    https://github.com/kk8bit/KayTool.git \
-    https://github.com/gseth/ControlAltAI-Nodes.git \
-    https://github.com/liconstudio/ComfyUI-Licon-MSR.git; do
+    https://github.com/liconstudio/ComfyUI-Licon-MSR.git \
+    https://github.com/AIFSH/F5-TTS-ComfyUI.git; do
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
   if [ -f "$CUSTOM_DIR/$name/requirements.txt" ]; then
@@ -85,7 +86,7 @@ done
 
 # 2. Requirements & Kornia patch (kizárólag LTXVideo-ra fókuszál)
 log "installing requirements & patching kornia"
-for dir in KJNodes LTXVideo; do
+for dir in LTXVideo; do
   log $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
   [ -f "$CUSTOM_DIR/$dir/requirements.txt" ] && $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
 done
@@ -101,6 +102,8 @@ PYEOF
 
 # 3. Modellek (LTX 2.3 alap, distilled, gemma prompt, ingredients, upscalerok)
 log "downloading models (MSR compatible)"
+
+# ===== VIDEÓ modellek (LTX-2.3 / Sulphur / Gemma / upscaler) =====
 #hf_file "SulphurAI/Sulphur-2-base" "sulphur_dev_fp8mixed.safetensors" "$CKPT_DIR/ltx-2.3-22b-dev-fp8.safetensors"
 #hf_file "szwagros/ltx-2.3-22b-distilled-1.1-bf16-fp8" "ltx-2.3-22b-distilled-1.1_transformer_fp8.safetensors" "$CKPT_DIR/ltx-2.3-22b-distilled-fp8.safetensors"
 #hf_file "Lightricks/LTX-2.3-fp8" "ltx-2.3-22b-distilled-fp8.safetensors" "$CKPT_DIR/ltx-2.3-22b-distilled-fp8.safetensors"
@@ -111,19 +114,22 @@ hf_file "Winnougan/Sulphur-2-LTX-2.3" "sulphur_distill_fp8.safetensors" "$CKPT_D
 #hf_file "Comfy-Org/ltx-2.3" "split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors" "$LORA_DIR/distilled.safetensors"
 #hf_file "Comfy-Org/ltx-2" "split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors" "$LORA_DIR/gemma_prompt.safetensors"
 hf_file "LiconStudio/LTX-2.3-Multiple-Subject-Reference" "LTX-2.3-Licon-MSR-V1.safetensors" "$LORA_DIR/LTX-2.3"
-hf_file "Maxdorger29/f5-tts-hungarian" "model_last_final.safetensors" "$LORA_DIR/../AIFSH/model_last_final.safetensors"
 #hf_file "Comfy-Org/ltx-2" "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" "$TEXT_DIR/gemma_encoder.fp4.mixed.safetensors"
 hf_file "Sikaworld1990/gemma-3-12b-qat-abliterated-sikaworld-fp4-ltx2" "Gemma3-12B-NVFP4-Sikaworld-Pure.safetensors" "$TEXT_DIR/Gemma3-12B-NVFP4-Sikaworld-Pure.safetensors"
 #hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ingredients.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/spatial.x2.11.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/temporal.x2.10.safetensors"
-hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
-hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
-hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
-hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetensors" "$CKPT_DIR/Qwen-Rapid-AIO-NSFW-v23.safetensors"
-hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
-hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 
+# ===== AUDIO modellek (F5-TTS magyar) =====
+hf_file "Maxdorger29/f5-tts-hungarian" "model_last_final.safetensors" "$LORA_DIR/../AIFSH/model_last_final.safetensors"
+
+# ===== KÉP modellek (Chroma/UnCanny + Qwen-Edit + Kontext) =====
+# [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
+# [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
+# [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
+hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetensors" "$CKPT_DIR/Qwen-Rapid-AIO-NSFW-v23.safetensors"
+# [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
+# [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
 log "downloading workflow templates"
 for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video (LTX-2.3).json"; do
