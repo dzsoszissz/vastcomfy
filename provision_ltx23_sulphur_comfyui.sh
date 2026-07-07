@@ -75,7 +75,7 @@ log "installing custom nodes (MSR focused)"
 for repo in \
     https://github.com/Lightricks/ComfyUI-LTXVideo.git \
     https://github.com/liconstudio/ComfyUI-Licon-MSR.git \
-    https://github.com/AIFSH/F5-TTS-ComfyUI.git; do
+    https://github.com/niknah/ComfyUI-F5-TTS.git; do
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
   if [ -f "$CUSTOM_DIR/$name/requirements.txt" ]; then
@@ -121,7 +121,10 @@ hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPS
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/temporal.x2.10.safetensors"
 
 # ===== AUDIO modellek (F5-TTS magyar) =====
-hf_file "Maxdorger29/f5-tts-hungarian" "model_last_final.safetensors" "$LORA_DIR/../AIFSH/model_last_final.safetensors"
+# niknah node: checkpoints/F5-TTS/, a vocab a modell nevén .txt kiterjesztéssel
+F5_DIR="$CKPT_DIR/F5-TTS"
+hf_file "sarpba/F5-TTS_V1_hun_v2" "model_927900.safetensors" "$F5_DIR/model_927900.safetensors"
+hf_file "sarpba/F5-TTS_V1_hun_v2" "vocab.txt" "$F5_DIR/model_927900.txt"
 
 # ===== KÉP modellek (Chroma/UnCanny + Qwen-Edit + Kontext) =====
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
@@ -137,7 +140,7 @@ for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video
 done
 
 curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/LTX-2.3_MSR_sample_workflow_V1_working.json -o /workspace/ComfyUI/user/default/workflows/LTX-2.3_MSR_sample_workflow_V1_working.json
-curl -s https://raw.githubusercontent.com/AIFSH/F5-TTS-ComfyUI/refs/heads/main/doc/base_workflow.json -o /workspace/ComfyUI/user/default/workflows/base_TTS_workflow.json
+curl -s https://raw.githubusercontent.com/niknah/ComfyUI-F5-TTS/refs/heads/main/example_workflows/simple_ComfyUI_F5TTS_workflow.json -o /workspace/ComfyUI/user/default/workflows/F5TTS_hun_workflow.json
 # 5. Manifest & indítás
 cat > /workspace/ltx23_msr_ready.json << EOF
 {
