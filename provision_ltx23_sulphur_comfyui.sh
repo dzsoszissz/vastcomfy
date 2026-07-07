@@ -48,7 +48,9 @@ $PIP install "jiwer<3.0"
 #2. Függőségek: CSAK a szükségesek, verzióra kötve (No more conflicts!)
 log "Cleaning environment and installing strict dependencies"
 $PIP uninstall -y kornia kornia-rs || true
-$PIP install  --upgrade --force-reinstall --no-cache-dir kornia==0.7.2 kornia-rs==0.1.14 torch torchvision torchaudio
+# A torch/torchvision/torchaudio-t NEM telepitjuk ujra: a szerver drivereh
+# ez illo, mar mukodo torch marad. A kornia --no-deps, hogy ne huzzon torch-ot.
+$PIP install --no-cache-dir --force-reinstall --no-deps kornia==0.7.2 kornia-rs==0.1.14
 
 HFCLI="$(dirname "$PY")/hf"
 [ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
@@ -79,16 +81,22 @@ for repo in \
   name=$(basename "$repo" .git)
   [ -d "$CUSTOM_DIR/$name" ] || git clone --depth=1 "$repo" "$CUSTOM_DIR/$name"
   if [ -f "$CUSTOM_DIR/$name/requirements.txt" ]; then
-    log "install requirements: $CUSTOM_DIR/$name/requirements.txt"
-    $PIP install -r "$CUSTOM_DIR/$name/requirements.txt" >/tmp/ltx23_node_req.log 2>&1 || { cat /tmp/ltx23_node_req.log >&2; fail "node requirements install failed: $dest"; }
+    log "install requirements (torch-erzekeny csomagok kiszurve): $CUSTOM_DIR/$name/requirements.txt"
+    # A torch-ot ujratelepito/ranto csomagokat kiszurjuk, hogy a mukodo torch maradjon.
+    grep -viE '^(torch|torchvision|torchaudio|torchcodec|torch-time-stretch|torch_time_stretch)([<>=!~ ]|$)' \
+      "$CUSTOM_DIR/$name/requirements.txt" > "$CUSTOM_DIR/$name/requirements.filtered.txt" || true
+    $PIP install --no-cache-dir -r "$CUSTOM_DIR/$name/requirements.filtered.txt" >/tmp/ltx23_node_req.log 2>&1 || { cat /tmp/ltx23_node_req.log >&2; fail "node requirements install failed"; }
   fi
 done
 
 # 2. Requirements & Kornia patch (kizárólag LTXVideo-ra fókuszál)
 log "installing requirements & patching kornia"
 for dir in LTXVideo; do
-  log $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
-  [ -f "$CUSTOM_DIR/$dir/requirements.txt" ] && $PIP install -r "$CUSTOM_DIR/$dir/requirements.txt" >/dev/null 2>&1
+  if [ -f "$CUSTOM_DIR/$dir/requirements.txt" ]; then
+    grep -viE '^(torch|torchvision|torchaudio|torchcodec|torch-time-stretch|torch_time_stretch)([<>=!~ ]|$)' \
+      "$CUSTOM_DIR/$dir/requirements.txt" > "$CUSTOM_DIR/$dir/requirements.filtered.txt" || true
+    $PIP install --no-cache-dir -r "$CUSTOM_DIR/$dir/requirements.filtered.txt" >/dev/null 2>&1
+  fi
 done
 log "start python"
 python3 << 'PYEOF'
