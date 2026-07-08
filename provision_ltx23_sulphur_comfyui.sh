@@ -132,8 +132,8 @@ hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UP
 # niknah node: checkpoints/F5-TTS/, a vocab a modell nevén .txt kiterjesztéssel
 F5_DIR="$CKPT_DIR/F5-TTS"
 hf_file "sarpba/F5-TTS_V1_hun_v2" "model_927900.safetensors" "$F5_DIR/model_927900.safetensors"
-hf_file "sarpba/F5-TTS_V1_hun_v2" "vocab.txt" "$F5_DIR/model_927900.txt"
-
+hf_file "sarpba/F5-TTS_V1_hun_v2" "vocab.txt" "$F5_DIR/vocab.txt"
+cp "$F5_DIR/vocab.txt" $F5_DIR/model_927900.txt"
 # ===== KÉP modellek (Chroma/UnCanny + Qwen-Edit + Kontext) =====
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
