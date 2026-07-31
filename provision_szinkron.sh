@@ -112,14 +112,24 @@ for size in ("large-v2", "large-v3"):
 PYEOF
 
 echo "  pyannote/speaker-diarization-3.1 (diarizáció, segmentation-3.0-t is behúzza)..."
+# Fontos: a repo SAJÁT modules/diarize/diarize_pipeline.py moduljának
+# DiarizationPipeline osztályán keresztül töltjük elő, NEM közvetlen
+# pyannote.audio importtal. A diarize_pipeline.py modul szinten
+# monkey-patch-eli a torchaudio.AudioMetaData hiányát (torchaudio 2.8+
+# esetén ez az attribútum eltűnt), és csak ez után importálja a
+# pyannote.audio.Pipeline-t. Ha megkerüljük ezt a modult, a patch nem
+# fut le, és AttributeError-ral elszáll a letöltés/betöltés.
 python - <<PYEOF
 import os
-from pyannote.audio import Pipeline
+import sys
 
-Pipeline.from_pretrained(
-    "pyannote/speaker-diarization-3.1",
-    use_auth_token=os.environ["HF_TOKEN"],
+sys.path.insert(0, "${REPO_DIR}")
+from modules.diarize.diarize_pipeline import DiarizationPipeline
+
+DiarizationPipeline(
     cache_dir="${DIARIZATION_MODEL_DIR}",
+    use_auth_token=os.environ["HF_TOKEN"],
+    device="cpu",
 )
 PYEOF
 
