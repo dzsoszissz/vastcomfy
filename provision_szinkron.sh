@@ -177,6 +177,55 @@ print("  diarize_pipeline.py javitva (use_auth_token -> token, model -> communit
 PYEOF
 
 ###############################################################################
+# 2d. modules/vad/silero_vad.py javitasa — VALOS HIBA ALAPJAN (2026-08).
+#
+# A repo sajat get_speech_timestamps()-je a hangot SZANDEKOSAN 2D tombbe
+# alakitja hivas elott ("padded_audio = np.expand_dims(padded_audio,
+# axis=0)"), egy komment szerint mert "faster-whisper VAD expects a 2D
+# array shaped as (batch_size, num_samples)". EZ HIBAS FELTETELEZES a
+# nalunk telepitett faster-whisper verziohoz kepest — annak sajat VAD-
+# modellje (faster_whisper/vad.py) kifejezetten 1D tombot var:
+# "assert audio.ndim == 1, Input should be a 1D array". Ez pontosan
+# ugyanaz a fajta verzio-elteresi hiba, mint a diarize_pipeline.py-nal —
+# a repo befagyott kodja mas konvenciot feltetelez, mint a ténylegesen
+# telepitett konyvtar aktualis viselkedese. A javitas egyszeruen
+# eltavolitja a felesleges/hibas expand_dims hivast, igy a hang 1D marad,
+# ahogy a tenyleges faster-whisper VAD elvarja.
+#
+# Mivel ez a fajl is a "git reset --hard"-tol minden futasnal pristine
+# allapotbol indul, ezt minden provisioning-futasnal ujra kell alkalmazni.
+###############################################################################
+echo "--- 2d. silero_vad.py javitasa (felesleges 2D-atalakitas eltavolitasa) ---"
+python - <<PYEOF
+path = "${REPO_DIR}/modules/vad/silero_vad.py"
+with open(path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+old_expand = '''        padded_audio = np.pad(
+            audio, (0, window_size_samples - audio.shape[0] % window_size_samples)
+        )
+        # faster-whisper VAD expects a 2D array shaped as (batch_size, num_samples)
+        padded_audio = np.expand_dims(padded_audio, axis=0)
+        # Guard against scalar outputs for very short inputs.'''
+new_expand = '''        padded_audio = np.pad(
+            audio, (0, window_size_samples - audio.shape[0] % window_size_samples)
+        )
+        # JAVITVA (provision.sh patch, 2026-08): a telepitett faster-whisper
+        # VAD-modellje 1D tombot var (assert audio.ndim == 1), NEM 2D-t — a
+        # kovetkezo sor eredetileg feltetelezte hogy 2D (batch, samples)
+        # kell, de ez verzio-elteres miatt "AssertionError: Input should
+        # be a 1D array"-t okozott. Eltavolitva, padded_audio 1D marad.
+        # Guard against scalar outputs for very short inputs.'''
+if old_expand not in content:
+    raise SystemExit(f"Nem talalhato a vart sor a silero_vad.py-ban: {old_expand!r}")
+content = content.replace(old_expand, new_expand, 1)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+print("  silero_vad.py javitva (felesleges np.expand_dims eltavolitva, 1D marad a hang)")
+PYEOF
+
+###############################################################################
 # 2c. Saját router hozzáadása a MEGLÉVŐ backendhez: /translate, /tts, /health
 #
 # Nem külön szolgáltatás/port — a WhisperX-WebUI-backend SAJÁT
@@ -324,6 +373,49 @@ async def separate(audio: UploadFile = File(...)):
 QWEN_LLAMA_SERVER_URL = os.environ.get("QWEN_LLAMA_SERVER_URL", "http://127.0.0.1:8002")
 
 
+def _ensure_qwen_translate_running(timeout_seconds: int = 240) -> None:
+    """
+    A whisperx-backend indito scriptje (whisperx-backend.sh) MINDEN
+    inditasakor explicit LEALLITJA a qwen-translate folyamatot, hogy
+    garantaltan legyen szabad VRAM a Whisper-modell (mohon, induláskor
+    betoltodo) sajat inditasahoz — lasd a script kommentjet. Emiatt a
+    qwen-translate "stopped" allapotban maradhat, amig ez a fuggveny
+    (vagy valaki kezzel) ujra el nem inditja.
+    Elobb egy gyors /health-csekket probal (ez NEM ebreszti fel a
+    --sleep-idle-seconds altal elaltatott MODELLT, de ha a FOLYAMAT fut,
+    valaszol ra) — ha nem valaszol (a folyamat le van allitva), explicit
+    supervisorctl start-tal ujrainditja, majd varakozik, amig elerhetove
+    nem valik.
+    """
+    import subprocess
+    import time
+
+    import requests
+
+    try:
+        resp = requests.get(f"{QWEN_LLAMA_SERVER_URL}/health", timeout=3)
+        if resp.status_code == 200:
+            return
+    except requests.RequestException:
+        pass
+
+    subprocess.run(["supervisorctl", "start", "qwen-translate"], check=False)
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            resp = requests.get(f"{QWEN_LLAMA_SERVER_URL}/health", timeout=3)
+            if resp.status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(3)
+
+    raise RuntimeError(
+        f"A qwen-translate (llama-server) nem allt fel {timeout_seconds} masodpercen belul."
+    )
+
+
 class BatchSegmentIn(BaseModel):
     id: int
     speaker: Optional[str] = None
@@ -347,6 +439,8 @@ class BatchTranslateResponse(BaseModel):
 
 def translate_batch_with_context(segments: list) -> list:
     import requests
+
+    _ensure_qwen_translate_running()
 
     lines = []
     for seg in segments:
@@ -751,6 +845,20 @@ mkdir -p /opt/supervisor-scripts
 
 cat > /opt/supervisor-scripts/whisperx-backend.sh <<EOF
 #!/bin/bash
+# FONTOS (valos hiba alapjan hozzaadva, 2026-08): a WhisperX-WebUI sajat
+# lifespan()-je MOHON, INDULASKOR tolti be a Whisper-modellt VRAM-ba (nem
+# lustan, elso hivasra) — ha a qwen-translate (llama-server) epp aktivan
+# bent van a VRAM-ban ebben a pillanatban, a whisperx-backend inditasa
+# "CUDA failed with error out of memory"-val elhasal, es a folyamat vegtelen
+# ujraprobalkozasi korbe (STARTING allapot) ragad. Ahelyett hogy a
+# felhasznalora bizna a helyes sorrend betartasat (elobb qwen-translate
+# leallitasa, csak utana whisperx-backend inditas), ez MOSTANTOL automatikus
+# — minden inditaskor (kezi VAGY supervisor-autorestart altal kivaltott is)
+# elobb leallitja a qwen-translate-et. A "|| true" azert kell, mert az elso
+# valaha-futtatott provisioning soran (mielott meg a 8. lepes regisztralna
+# a qwen-translate-et) ez a program meg nem is letezik a supervisornal.
+supervisorctl stop qwen-translate || true
+sleep 2
 source /venv/main/bin/activate
 cd "${REPO_DIR}"
 exec uvicorn backend.main:app --host 0.0.0.0 --port 8000
