@@ -759,10 +759,17 @@ if [ -x "$LLAMA_SERVER_BIN" ]; then
     cat > /opt/supervisor-scripts/qwen-translate.sh <<EOF
 #!/bin/bash
 export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
+# FONTOS: -c 65536 (a kezdeti ertek) CUDA out-of-memory-t okozott a 24 GB-os
+# 3090-en — a 65536 tokenes kontextushoz tartozo KV-cache a Q4_K_M sulyok
+# (~16.8 GB) MELLETT mar nem fert bele. A mi feladatunkhoz (kotegelt
+# forditas, max_tokens = max(4096, 3000+szegmensszam*150)) 32768 bovel
+# eleg, es jelentosen kisebb KV-cache-et igenyel. Ha meg mindig OOM-ot
+# kapnal, csokkentsd tovabb (pl. 16384-re), vagy ellenorizd nvidia-smi-vel,
+# hogy a whisper/UVR/F5-TTS stack nem tart-e lefoglalva VRAM-ot induláskor.
 exec ${LLAMA_SERVER_BIN} \\
     -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
     --host 0.0.0.0 --port 8002 \\
-    -ngl 999 -c 65536 -fa on \\
+    -ngl 999 -c 32768 -fa on \\
     --jinja \\
     --reasoning on \\
     --chat-template-kwargs '{"preserve_thinking": true}'
