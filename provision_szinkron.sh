@@ -47,6 +47,26 @@ apt-get install -y --no-install-recommends \
     python3-filelock
 rm -rf /var/lib/apt/lists/*
 
+echo "===== PYTHON ====="
+python --version
+which python
+
+echo "===== PIP ====="
+pip --version
+which pip
+
+echo "===== INSTALLED PACKAGES ====="
+python -m pip freeze | sort
+
+echo "===== TORCH ====="
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda :", torch.version.cuda)
+print("gpu  :", torch.cuda.is_available())
+PY
+
+
 ###############################################################################
 # 2. Repository klónozása / frissítése (idempotens — új instance-nál a
 #    /workspace megmarad, tehát ez git pull-ra egyszerűsödik)
