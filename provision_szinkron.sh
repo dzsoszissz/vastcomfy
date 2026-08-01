@@ -402,6 +402,19 @@ async def tts(
     ref_audio: UploadFile = File(..., description="Referencia hangminta (5-15 mp, pl. speaker_00.wav)"),
     ref_text: str = Form(..., description="A referencia hang pontos átirata"),
     gen_text: str = Form(..., description="A felolvasandó/generálandó magyar szöveg"),
+    speed: float = Form(
+        0.85,
+        description=(
+            "Az F5-TTS a kimenet hosszat a ref_text/gen_text KARAKTERARANYABOL "
+            "becsuli — ha a ket szoveg kulonbozo nyelvu (nalunk tipikusan angol "
+            "ref_text, magyar gen_text), ez az arany felreviheti a becslest es "
+            "korai levagast okozhat. Az alapertelmezett 0.85 (a konyvtar sajat "
+            "alapertelmezese: 1.0) tobb keretet/idot enged a generalasnak "
+            "biztonsagi tartalekkent. Ha meg igy is levagna a vege, probalj meg "
+            "kisebb erteket (pl. 0.7); ha tul lassunak/nyujtottnak hangzik, "
+            "novelheted 1.0 fele."
+        ),
+    ),
 ):
     import soundfile as sf
 
@@ -412,7 +425,7 @@ async def tts(
         tmp_ref_path = tmp_ref.name
 
     try:
-        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=ref_text, gen_text=gen_text)
+        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=ref_text, gen_text=gen_text, speed=speed)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"F5-TTS generálási hiba: {exc}")
     finally:
