@@ -191,13 +191,13 @@ PYEOF
 # is a checkout UTÁN, a backend indítása (7. lépés) ELŐTT kell futnia,
 # minden provisioning-futásnál újra.
 #
-# FONTOS VRAM-megfontolás: a NLLB/Racka-4B/F5-TTS modelleket SZÁNDÉKOSAN
-# NEM tesszük be a main.py lifespan()-jének eager-load listájába (ahogy a
-# whisper/vad/bgm-separation modellek be vannak) — azok @functools.lru_cache
-# miatt csak az ELSŐ /translate vagy /tts híváskor töltődnek be. Ha eager
-# lenne, a szerver induláskor egyszerre próbálná VRAM-ba tölteni az egész
-# whisper+diarizáció+UVR+forditas+TTS stacket, ami könnyen túlcsordulhatna
-# a 24 GB-os 3090-en.
+# FONTOS VRAM-megfontolás: a NLLB/Qwen3-Stylizer/F5-TTS modelleket
+# SZÁNDÉKOSAN NEM tesszük be a main.py lifespan()-jének eager-load
+# listájába (ahogy a whisper/vad/bgm-separation modellek be vannak) —
+# azok @functools.lru_cache miatt csak az ELSŐ /translate vagy /tts
+# híváskor töltődnek be. Ha eager lenne, a szerver induláskor egyszerre
+# próbálná VRAM-ba tölteni az egész whisper+diarizáció+UVR+forditas+TTS
+# stacket, ami könnyen túlcsordulhatna a 24 GB-os 3090-en.
 ###############################################################################
 echo "--- 2c. Saját /translate, /tts router beillesztése a meglévő backendbe ---"
 
@@ -206,8 +206,8 @@ touch "${REPO_DIR}/backend/routers/custom_ai/__init__.py"
 
 cat > "${REPO_DIR}/backend/routers/custom_ai/router.py" <<'PYEOF'
 """
-custom_ai/router.py — sajat router: forditas (NLLB-200 + Racka-4B) es
-magyar hangklonozas (F5-TTS). A backend/main.py koti be a meglevo
+custom_ai/router.py — sajat router: forditas (NLLB-200 + Qwen3-4B-Instruct-2507)
+es magyar hangklonozas (F5-TTS). A backend/main.py koti be a meglevo
 WhisperX-WebUI FastAPI-alkalmazasba.
 
 ##############################################################################
@@ -234,7 +234,8 @@ custom_ai_router = APIRouter(prefix="/custom-ai", tags=["Custom AI (Translate + 
 
 
 # ============================================================
-# Forditas: NLLB-200 1.3B (nyers forditas) -> Racka-4B (magyar stilizalas)
+# Forditas: NLLB-200 1.3B (nyers forditas) -> Qwen3-4B-Instruct-2507
+# (magyar stilizalas)
 # ============================================================
 
 class TranslateRequest(BaseModel):
@@ -262,13 +263,13 @@ def get_nllb():
 
 
 @functools.lru_cache
-def get_racka():
+def get_stylizer_model():
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained("elte-nlp/Racka-4B", cache_dir=TRANSLATION_MODEL_DIR)
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B-Instruct-2507", cache_dir=TRANSLATION_MODEL_DIR)
     model = AutoModelForCausalLM.from_pretrained(
-        "elte-nlp/Racka-4B",
+        "Qwen/Qwen3-4B-Instruct-2507",
         cache_dir=TRANSLATION_MODEL_DIR,
         torch_dtype=torch.bfloat16,
         device_map="cuda",
@@ -288,56 +289,76 @@ def nllb_translate(text: str, source_lang: str, target_lang: str) -> str:
     return tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
 
 
-def racka_stylize(raw_text: str, original_text: str) -> str:
+def stylize_translation(raw_text: str, original_text: str) -> str:
     import torch
 
-    tokenizer, model = get_racka()
+    tokenizer, model = get_stylizer_model()
+    # A korabban hasznalt Racka-4B (magyar-hangolt, de dual-mode Qwen3-4B
+    # alapu) elesben megbizhatatlannak bizonyult: idonkent visszaidezte a
+    # sajat rendszer-promptjat, duplikalta a valaszt, vagy beleirta a
+    # sablon-cimkeket a kimenetbe. A Qwen3-4B-Instruct-2507 ennek pont az
+    # ellentetje: DEDIKALT, csak non-thinking modu valtozat (nincs is
+    # <think> blokk generalasi kepessege architekturalisan), amit
+    # kifejezetten az instrukciokovetes es a tobbnyelvu illeszkedes
+    # javitasara frissitettek (2025 julius). A "VEGSO:" jelolo + a
+    # kinyeres-alapu feldolgozas ennek ellenere megmarad tovabbi
+    # biztonsagi halonak — barmely modellnel hasznos, nem csak a regi
+    # Rackanal.
     messages = [
         {
             "role": "system",
             "content": (
                 "Te egy profi magyar szinkron- es feliratforditó vagy. A feladatod, hogy egy "
                 "nyers, gépi fordítást természetes, folyékony, köznyelvi magyarra igazíts, "
-                "az eredeti jelentés megtartása mellett. Csak a javított mondatot add vissza, "
-                "semmi mást."
+                "az eredeti jelentés megtartása mellett."
             ),
         },
         {
             "role": "user",
-            "content": f"Eredeti szöveg: {original_text}\nNyers fordítás: {raw_text}\nJavított magyar mondat:",
+            "content": (
+                f"Eredeti szöveg: {original_text}\n"
+                f"Nyers fordítás: {raw_text}\n\n"
+                "Valaszolj PONTOSAN ebben a formatumban, semmi mast ne irj:\n"
+                "VEGSO: <a javított magyar mondat, egyetlen sorban>"
+            ),
         },
     ]
-    # A Racka-4B (Qwen3-4B alapu) alapertelmezetten "gondolkodo" (thinking)
-    # modban valaszol, <think>...</think> blokkal a valasz elott — ez egy
-    # egyszeru stilizalasi feladathoz felesleges, es a rovid max_new_tokens
-    # miatt a valodi valasz elott le is vaghatja a generalast. A Qwen3
-    # chat template-je tamogatja az enable_thinking=False kapcsolot; ha a
-    # finomhangolt valtozat sajat template-je ezt nem ismerne, essunk
-    # vissza a sima hivasra.
-    try:
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
-        )
-    except TypeError:
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     with torch.no_grad():
-        generated = model.generate(**inputs, max_new_tokens=512, do_sample=False)
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=512,
+            do_sample=False,
+            # repetition_penalty + no_repeat_ngram_size: tovabbi vedelem
+            # barmilyen degeneralt ismetles ellen (pl. korabban megfigyelt
+            # "Tess. Tess." tipusu duplikacio) — barmely modellnel hasznos
+            # biztonsagi halo, nem csak a regi Rackanal jelentkezo hibara
+            # valo reakciokent.
+            repetition_penalty=1.3,
+            no_repeat_ngram_size=3,
+        )
     output_ids = generated[0][inputs["input_ids"].shape[1]:]
     output = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
 
-    # Vedekezo tisztitas: ha meg igy is maradna LEZART <think>...</think>
-    # blokk (pl. a fine-tune sajat template-je nem tamogatja az
-    # enable_thinking-et, de a gondolkodas belefert a tokenkeretbe),
-    # vagjuk le, mielott visszaadnank.
+    # Vedekezo tisztitas: a Qwen3-4B-Instruct-2507 architekturalisan nem
+    # general <think> blokkot, de ha valamiert megis maradna (pl. jovobeli
+    # modellcsere), vagjuk le, mielott a jelolot keresnenk.
     output = re.sub(r"<think>.*?</think>", "", output, flags=re.DOTALL).strip()
 
-    # Ha ETTOL FUGGETLENUL is maradt egy LEZARATLAN "<think>" (a
-    # gondolkodas nem fert bele a max_new_tokens-be, felbeszakadt valasz),
-    # vagy a tisztitas utan ures a valasz — inkabb a nyers NLLB-forditast
-    # adjuk vissza, mint hasznalhatatlan, felbeszakadt "gondolkodas"-szoveget.
-    if "<think>" in output or not output:
+    # A "VEGSO:" jelolo utani, ELSO sor a tenyleges valasz — fuggetlenul
+    # attol, mi elozi meg (ismetles, visszaidezett prompt-reszlet, stb.).
+    match = re.search(r"VEGSO:\s*(.+)", output, flags=re.IGNORECASE)
+    if match:
+        output = match.group(1).strip().split("\n")[0].strip()
+    else:
+        output = ""
+
+    # Ha a jelolo nem talalhato, LEZARATLAN "<think>" maradt, vagy a
+    # kinyert valasz ures — inkabb a nyers NLLB-forditast adjuk vissza,
+    # mint hasznalhatatlan/megbizhatatlan szoveget.
+    if not output or "<think>" in output:
         return raw_text
 
     return output
@@ -354,9 +375,9 @@ def translate(req: TranslateRequest):
         return TranslateResponse(raw_translation=raw, stylized_translation=raw)
 
     try:
-        stylized = racka_stylize(raw, req.text)
+        stylized = stylize_translation(raw, req.text)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Racka-4B stilizálási hiba: {exc}")
+        raise HTTPException(status_code=500, detail=f"Qwen3 stilizálási hiba: {exc}")
 
     return TranslateResponse(raw_translation=raw, stylized_translation=stylized)
 
@@ -658,19 +679,29 @@ echo "  napló: /var/log/portal/whisperx-backend.log"
 
 ###############################################################################
 # 8. Fordítási modellek előtöltése (NLLB-200 1.3B nyers fordítás +
-#    Racka-4B magyar stilizálás)
+#    Qwen3-4B-Instruct-2507 magyar stilizálás)
 #
 # Ez a szakasz NEM része a WhisperX-WebUI repónak — külön, a jövőbeli saját
 # fordítási szolgáltatáshoz készíti elő a modelleket, ugyanazzal az elvvel,
 # mint a Whisper/UVR/diarizáció: előtöltjük, hogy első hívásnál ne kelljen
 # letölteni.
 #
-# Miért Racka-4B, nem generikus Qwen2.5/Llama 3.1: sem a Qwen2.5, sem a
-# Llama 3.1 nem hivatalosan magyar-fókuszú (a Llama 3.1 nyelvlistáján a
-# magyar nincs rajta). A Racka-4B az ELTE NLP csoport kifejezetten magyarra
-# hangolt, Qwen3-4B-alapú modellje — a publikált benchmarkok szerint a
-# HuLU-n és OpenHuEval-en a nagyobb (8B) PULI-LlumiX-Llama-3.1 magyar
-# modellt is felülmúlja néhány feladaton, kisebb méret mellett.
+# VÁLTÁS (2026-08): korábban itt az elte-nlp/Racka-4B (magyar-hangolt
+# Qwen3-4B) futott, de éles tesztelés során megbízhatatlannak bizonyult —
+# visszaidézte a saját rendszer-promptját, duplikálta a válaszokat,
+# beleírta a sablon-címkéket a kimenetbe. Ezek ÁLTALÁNOS instrukció-
+# követési gyengeségek voltak, nem kifejezetten magyar-nyelvi problémák,
+# ezért a felhasználó javaslatára áttértünk a Qwen/Qwen3-4B-Instruct-2507-re:
+# ez a Qwen3-4B DEDIKÁLT, CSAK non-thinking módú, 2025 júliusi frissítése —
+# architekturálisan képtelen <think> blokkot generálni (nem csak egy
+# kikapcsolható flag védi ez ellen), és kifejezetten az instrukció-
+# követés, a többnyelvű illeszkedés és a felhasználói preferenciákhoz
+# igazodás javítására hangolták. Ugyanaz a 4B méret, ugyanannyi VRAM —
+# közvetlen csere. Amit elveszítünk: a Racka kifejezetten magyarra
+# hangolt benchmark-előnyét (HuLU/OpenHuEval) — ezt a Qwen3 család
+# általános, hivatalosan is erősnek hirdetett többnyelvű instrukció-
+# követése/fordítási képessége ellensúlyozza, bár nem magyar-specifikusan
+# optimalizált.
 #
 # Miért snapshot_download, nem model-instantiate (mint a faster-whisper/
 # pyannote-nál): a transformers-modelleknél a snapshot_download csak a
@@ -679,8 +710,9 @@ echo "  napló: /var/log/portal/whisperx-backend.log"
 # tényleges fordítási szolgáltatás majd ugyanebből a cache_dir-ből
 # tölt be, újralétöltés nélkül.
 #
-# Diszkigény: kb. +10-15 GB (NLLB-200-1.3B ~5 GB, Racka-4B ~8 GB fp16-ban)
-# — ha szűkös a hely, ellenőrizd a "df -h /" kimenetet a lépés után.
+# Diszkigény: kb. +10-15 GB (NLLB-200-1.3B ~5 GB, Qwen3-4B-Instruct-2507
+# ~8 GB fp16-ban) — ha szűkös a hely, ellenőrizd a "df -h /" kimenetet a
+# lépés után.
 #
 # FONTOS: ez a lepes SZANDEKOSAN nem szakitja meg a szkriptet hiba eseten
 # (set +e / set -e keretezve). A 7. lepesben a backend mar elindult es
@@ -689,7 +721,7 @@ echo "  napló: /var/log/portal/whisperx-backend.log"
 # provisioning bukasat es NE inditson ujra egy teljes, a mar futo
 # szolgaltatast megzavaro kort. A hiba csak logolva lesz.
 ###############################################################################
-echo "--- 8. Fordítási modellek előtöltése (NLLB-200 1.3B, Racka-4B) ---"
+echo "--- 8. Fordítási modellek előtöltése (NLLB-200 1.3B, Qwen3-4B-Instruct-2507) ---"
 
 set +e
 
@@ -710,9 +742,9 @@ snapshot_download(
     cache_dir="${TRANSLATION_MODEL_DIR}",
 )
 
-print("  elte-nlp/Racka-4B letoltese...")
+print("  Qwen/Qwen3-4B-Instruct-2507 letoltese...")
 snapshot_download(
-    repo_id="elte-nlp/Racka-4B",
+    repo_id="Qwen/Qwen3-4B-Instruct-2507",
     cache_dir="${TRANSLATION_MODEL_DIR}",
 )
 PYEOF
