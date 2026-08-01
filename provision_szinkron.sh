@@ -365,9 +365,11 @@ async def separate(audio: UploadFile = File(...)):
 # fuggveny es a hozza tartozo transformers/BitsAndBytesConfig import
 # EZERT TUNT EL innen.
 #
-# A GONDOLKODAS es a JSON_KEZDET/JSON_VEGE kinyeres-logika VALTOZATLAN —
-# a llama-server valasza is <think>...</think> blokkot tartalmazhat a
-# vegso valasz elott (--reasoning on kapcsolo), amit ugyanugy levagunk.
+# A JSON_KEZDET/JSON_VEGE kinyeres-logika VALTOZATLAN maradt, es a
+# <think>...</think> levagast is megtartottuk VEDEKEZO celbol — bar a
+# gondolkodast MOST MAR keresenkent kikapcsoljuk (ld. lent, valos hiba
+# alapjan, 2026-08), ha a szerver ezt figyelmen kivul hagyna, a strip
+# akkor is arattalanit.
 # ============================================================
 
 QWEN_LLAMA_SERVER_URL = os.environ.get("QWEN_LLAMA_SERVER_URL", "http://127.0.0.1:8002")
@@ -480,19 +482,22 @@ def translate_batch_with_context(segments: list) -> list:
         },
     ]
 
-    # A kimenet meretenek dinamikus skalazasa a szegmensszammal — a
-    # bekapcsolt gondolkodas miatt JELENTOSEN nagyobb keret kell, mint egy
-    # non-thinking valasznal. VALOS HIBA ALAPJAN EMELVE (2026-08): a korabbi
-    # max(4096, 3000+szegmensszam*150) kepletnel (14 szegmensre: 5100 token)
-    # a modell a <think> blokkban elfogyasztotta a teljes keretet, mielott
-    # eljutott volna a tenyleges JSON-valaszig — a hivas sikeresen lefutott,
-    # de "A modell valasza nem tartalmazott ertelmezheto JSON-t" hibaval
-    # vegzodott. A Qwen3.6 sajat dokumentacioja "Adequate Output Length"
-    # cimen 32768 tokent ajanl a legtobb (gondolkodo modu) kereshez. A
-    # -c 32768 a TELJES (bemenet+kimenet) kontextusablak, ezert nem
-    # kerhetunk pontosan ennyit kimenetre — max_tokens felso hatarat
-    # 24576-ra korlatozzuk, hogy mindig maradjon hely a bemeneti promptnak.
-    max_tokens = min(24576, max(12288, 2000 + len(segments) * 400))
+    # A kimenet meretenek dinamikus skalazasa a szegmensszammal. VALOS
+    # HIBA ALAPJAN VEGLEGESEN ATALAKITVA (2026-08): a korabban bekapcsolt
+    # gondolkodas (--reasoning on, szerver-szinten) aranytalanul sok
+    # tokent fogyasztott — pl. egy 27 szegmenses, tartalmilag nem
+    # bonyolult koteg ~12800 tokent (a teljes max_tokens keretet) elt el
+    # PUSZTAN gondolkodasra, ~5 perc alatt, MEGIS ures/hasznalhatatlan
+    # valaszt adva vissza. Sikeres, vegigfutott gondolkodo-modu fordítást
+    # SOHA nem lattunk ebben a projektben — a felteteizett kontextus/
+    # stilus-elony bizonyitatlan maradt, a koltsege (ido, megbizhatatlan-
+    # sag) viszont mar most is jol lathato. Ezert MOST, KERESENKENT
+    # KIKAPCSOLJUK a gondolkodast a fordításnál ("chat_template_kwargs":
+    # {"enable_thinking": False}) — ezt a Qwen3.6 sajat dokumentacioja
+    # kifejezetten tamogatja kereskent, a szerver sajat --reasoning on
+    # alapbeallitasa MELLETT is felulirhato. Enelkul a max_tokens is
+    # sokkal kisebb lehet, mert nincs tobbe gondolkodasi overhead.
+    max_tokens = max(2048, 150 + len(segments) * 60)
 
     try:
         resp = requests.post(
@@ -501,12 +506,14 @@ def translate_batch_with_context(segments: list) -> list:
                 "model": "qwen3.6-27b",
                 "messages": messages,
                 "max_tokens": max_tokens,
-                # A Qwen sajat ajanlasa "thinking mode altalanos feladatokhoz":
-                # temperature=1.0, top_p=0.95, presence_penalty=0.0. A
-                # llama-server --reasoning on kapcsoloval gondolkodik.
-                "temperature": 1.0,
-                "top_p": 0.95,
-                "presence_penalty": 0.0,
+                # A Qwen sajat ajanlasa "Instruct (non-thinking) mode"-hoz:
+                # temperature=0.7, top_p=0.80, presence_penalty=1.5 — MAS,
+                # mint a thinking-modu ajanlas (1.0/0.95/0.0), mert most
+                # kikapcsoljuk a gondolkodast (ld. lent).
+                "temperature": 0.7,
+                "top_p": 0.80,
+                "presence_penalty": 1.5,
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=900,
         )
@@ -514,8 +521,10 @@ def translate_batch_with_context(segments: list) -> list:
     except requests.RequestException as exc:
         raise RuntimeError(f"A qwen-translate (llama-server) hivas sikertelen: {exc}") from exc
 
-    output = resp.json()["choices"][0]["message"]["content"].strip()
-    output = re.sub(r"<think>.*?</think>", "", output, flags=re.DOTALL).strip()
+    resp_json = resp.json()
+    raw_output = resp_json["choices"][0]["message"]["content"].strip()
+    finish_reason = resp_json["choices"][0].get("finish_reason", "(ismeretlen)")
+    output = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL).strip()
 
     match = re.search(r"JSON_KEZDET\s*(.+?)\s*JSON_VEGE", output, flags=re.DOTALL)
     if match:
@@ -526,14 +535,16 @@ def translate_batch_with_context(segments: list) -> list:
         start = output.find("[")
         end = output.rfind("]")
         if start == -1 or end == -1 or end <= start:
-            # Diagnosztikai celbol beleirjuk a hibauzenetbe a nyers valasz
-            # elejet/veget is — igy legkozelebb NEM kell talalgatni, mit
-            # valaszolt tenylegesen a modell (pl. lezaratlan <think>,
-            # meg tobb tokent igenylo valasz, vagy teljesen mas hiba).
-            preview = output[:400] if output else "(ures valasz)"
+            # Diagnosztikai celbol beleirjuk a hibauzenetbe a NYERS
+            # (think-levagas ELOTTI) valasz elejet/veget, a hosszat, ES a
+            # finish_reason-t is ("length" = a max_tokens szakitotta
+            # felbe, "stop" = a modell magatol befejezte) — igy legkozelebb
+            # NEM kell talalgatni, mi tortent tenylegesen.
+            raw_preview = raw_output[:500] if raw_output else "(ures valasz)"
             raise ValueError(
                 f"A modell valasza nem tartalmazott ertelmezheto JSON-t. "
-                f"max_tokens={max_tokens}, valasz eleje: {preview!r}"
+                f"max_tokens={max_tokens}, finish_reason={finish_reason!r}, "
+                f"nyers valasz hossza={len(raw_output)}, nyers valasz eleje: {raw_preview!r}"
             )
         candidate = output[start : end + 1]
 
