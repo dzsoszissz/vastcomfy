@@ -91,51 +91,51 @@ fi
 cd "$REPO_DIR"
 
 ###############################################################################
-# 2b. Kompatibilitási folt: huggingface_hub use_auth_token -> token
+# 2b. Kompatibilitási folt: torch.load weights_only (PyTorch 2.6+)
 #
-# A requirements.txt sem a pyannote.audio-t, sem a huggingface_hub-ot nem
-# pinneli verzióhoz. Az újabb huggingface_hub kiadások eltávolították a
-# "use_auth_token" paramétert, de a pyannote.audio Pipeline.from_pretrained()
-# a saját belső hf_hub_download()-hívásában még mindig ezt használja — ez
-# TypeError-t dob, mind itt preload alatt, mind élesben minden diarizációs
-# API-hívásnál. Verzió-pinnelés helyett (ami törékeny, mert nem tudni
-# pontosan melyik verziónál szűnt meg a paraméter) magát a repo forrását
-# foltozzuk — ugyanabban a fájlban, ahol a repo saját maga is hasonló
-# kompatibilitási foltot alkalmaz a torchaudio.AudioMetaData hiányára.
+# PyTorch 2.6-tól a torch.load() alapértelmezetten weights_only=True módban
+# fut (biztonsági célból). A pyannote szegmentációs modellje egy régebbi
+# PyTorch-Lightning-mentésű checkpoint, ami ezzel a szigorú móddal nem
+# tölthető be (UnpicklingError egy torch.torch_version.TorchVersion
+# globálra). Mivel hivatalos, HF_TOKEN-nel hitelesített, trusted forrásból
+# (huggingface.co/pyannote) töltjük le, biztonságosan visszaállíthatjuk
+# weights_only=False-ra. Ez torch-verzió miatti, nem pyannote-verzió miatti
+# probléma, tehát verzió-pinneléssel nem küszöbölhető ki — marad a
+# forráskód-szintű folt, ugyanabban a fájlban és mintában, ahol a repo
+# saját maga is hasonlót alkalmaz a torchaudio.AudioMetaData hiányára.
 # Mivel ez a fájl a "git reset --hard"-tól minden futásnál pristine
 # állapotból indul, ezt a foltot minden provisioning-futásnál újra
 # alkalmazni kell — ezért itt, a checkout után azonnal.
 ###############################################################################
-echo "--- 2b. hf_hub_download kompatibilitási folt ---"
+echo "--- 2b. Kompatibilitási folt (torch.load weights_only) ---"
 python - <<PYEOF
 path = "${REPO_DIR}/modules/diarize/diarize_pipeline.py"
 with open(path, "r", encoding="utf-8") as f:
     content = f.read()
 
 marker = "from pyannote.audio import Pipeline"
-patch = '''import huggingface_hub as _hf_hub
+patch = '''import torch as _torch
 
-if not getattr(_hf_hub.hf_hub_download, "_use_auth_token_compat", False):
-    _original_hf_hub_download = _hf_hub.hf_hub_download
+if not getattr(_torch.load, "_weights_only_compat", False):
+    _original_torch_load = _torch.load
 
-    def _hf_hub_download_compat(*args, **kwargs):
-        if "use_auth_token" in kwargs:
-            kwargs.setdefault("token", kwargs.pop("use_auth_token"))
-        return _original_hf_hub_download(*args, **kwargs)
+    def _torch_load_compat(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _original_torch_load(*args, **kwargs)
 
-    _hf_hub_download_compat._use_auth_token_compat = True
-    _hf_hub.hf_hub_download = _hf_hub_download_compat
+    _torch_load_compat._weights_only_compat = True
+    _torch.load = _torch_load_compat
 
 '''
 
 if marker not in content:
     raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {marker!r}")
 
-if "_use_auth_token_compat" not in content:
+if "_weights_only_compat" not in content:
     content = content.replace(marker, patch + marker, 1)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    print("  diarize_pipeline.py befoltozva (use_auth_token -> token kompatibilitas)")
+    print("  diarize_pipeline.py befoltozva (torch.load weights_only kompatibilitas)")
 else:
     print("  diarize_pipeline.py mar tartalmazza a foltot")
 PYEOF
@@ -149,6 +149,16 @@ python -m pip install -U pip
 python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
+
+# A requirements.txt sem a pyannote.audio-t, sem a huggingface_hub-ot nem
+# pinneli verzióhoz. A pyannote.audio 4.0 elhagyta a "use_auth_token"
+# paramétert (ez az upstream m-bain/whisperX projekt saját, hivatalosan
+# dokumentált, ismert törése is — issue #1241: "pyannote 4 has breaking
+# changes including use_auth_token", ajánlott workaround: pyannote-audio
+# pinnelése 4.0 alá). Ahelyett hogy ezt monkeypatch-csel kerülnénk meg,
+# egyszerűen egy még kompatibilis verzióra rögzítjük.
+echo "pyannote.audio és huggingface_hub rögzítése kompatibilis verzióra..."
+python -m pip install "pyannote.audio==3.4.0" "huggingface_hub<1.0"
 
 echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
 python - <<'PYEOF'
