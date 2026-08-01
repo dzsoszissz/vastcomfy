@@ -143,10 +143,29 @@ python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
 
+# A requirements.txt nem pinneli a pyannote.audio-t verzióhoz. A TELJES
+# függőségi gráf (a "uvr" csomag óriási tranzitív fájával, transformers-szel,
+# a numpy<2.3 pinnel együtt) miatt a pip resolver ilyenkor visszalép egy
+# régi, pyannote.audio==3.4.0 verzióra, aminek MÁS a hívási szignatúrája
+# (use_auth_token=, nem token=), mint a friss 4.x-nek. Ez helyben, két
+# teljes-gráfos "pip install --dry-run" futtatással ellenőrizve: a
+# pyannote.audio==4.0.7 explicit kikényszerítése a TELJES requirements.txt
+# mellett is konfliktusmentesen összeáll (numpy 2.2.6 marad <2.3, a torch
+# a már telepített gyári verzióval elégül ki). A 4.0.7-et azért pont ezt
+# választottuk, mert a forráskódjában nulla "use_auth_token" előfordulás
+# van, és a modellbetöltés explicit weights_only=False-t ír elő magának.
+echo "pyannote.audio rögzítése a teljes gráfon ellenőrzött 4.0.7 verzióra..."
+python -m pip install "pyannote.audio==4.0.7"
+
 echo "Torch/CUDA build ellenőrzése (2.8.0-t várunk, a friss image gyári torch-ja):"
 python - <<'PYEOF'
 import torch
 print(f"  torch={torch.__version__}  cuda_available={torch.cuda.is_available()}")
+PYEOF
+echo "pyannote.audio verzió ellenőrzése (4.0.7-et várunk):"
+python - <<'PYEOF'
+import pyannote.audio
+print(f"  pyannote.audio={pyannote.audio.__version__}")
 PYEOF
 
 ###############################################################################
@@ -236,7 +255,12 @@ python - <<PYEOF
 from ruamel.yaml import YAML
 
 yaml = YAML(typ="safe")
+yaml.map_indent = 2
+yaml.sequence_indent = 4
+yaml.sequence_dash_offset = 2
 yaml.preserve_quotes = True
+yaml.default_flow_style = False
+yaml.sort_base_mapping_type_on_output = False
 
 config_path = "${BACKEND_CONFIG_PATH}"
 with open(config_path, "r", encoding="utf-8") as f:
