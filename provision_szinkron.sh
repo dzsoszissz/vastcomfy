@@ -134,7 +134,8 @@ print("Patched:")
 for f in patched:
     print("  ", f)
 PY
-
+find /workspace/WhisperX-WebUI -type f -name "*.py" \
+    -exec sed -i 's/use_auth_token=/token=/g' {} +
 echo "--- 5. Modellek előtöltése ---"
 
 echo "  faster-whisper large-v2 és large-v3..."
