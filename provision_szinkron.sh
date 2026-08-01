@@ -220,6 +220,7 @@ WhisperX-WebUI FastAPI-alkalmazasba.
 import functools
 import io
 import os
+import re
 import tempfile
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -306,12 +307,40 @@ def racka_stylize(raw_text: str, original_text: str) -> str:
             "content": f"Eredeti szöveg: {original_text}\nNyers fordítás: {raw_text}\nJavított magyar mondat:",
         },
     ]
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # A Racka-4B (Qwen3-4B alapu) alapertelmezetten "gondolkodo" (thinking)
+    # modban valaszol, <think>...</think> blokkal a valasz elott — ez egy
+    # egyszeru stilizalasi feladathoz felesleges, es a rovid max_new_tokens
+    # miatt a valodi valasz elott le is vaghatja a generalast. A Qwen3
+    # chat template-je tamogatja az enable_thinking=False kapcsolot; ha a
+    # finomhangolt valtozat sajat template-je ezt nem ismerne, essunk
+    # vissza a sima hivasra.
+    try:
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+    except TypeError:
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     with torch.no_grad():
-        generated = model.generate(**inputs, max_new_tokens=256, do_sample=False)
+        generated = model.generate(**inputs, max_new_tokens=512, do_sample=False)
     output_ids = generated[0][inputs["input_ids"].shape[1]:]
-    return tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+    output = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+    # Vedekezo tisztitas: ha meg igy is maradna LEZART <think>...</think>
+    # blokk (pl. a fine-tune sajat template-je nem tamogatja az
+    # enable_thinking-et, de a gondolkodas belefert a tokenkeretbe),
+    # vagjuk le, mielott visszaadnank.
+    output = re.sub(r"<think>.*?</think>", "", output, flags=re.DOTALL).strip()
+
+    # Ha ETTOL FUGGETLENUL is maradt egy LEZARATLAN "<think>" (a
+    # gondolkodas nem fert bele a max_new_tokens-be, felbeszakadt valasz),
+    # vagy a tisztitas utan ures a valasz — inkabb a nyers NLLB-forditast
+    # adjuk vissza, mint hasznalhatatlan, felbeszakadt "gondolkodas"-szoveget.
+    if "<think>" in output or not output:
+        return raw_text
+
+    return output
 
 
 @custom_ai_router.post("/translate", response_model=TranslateResponse)
