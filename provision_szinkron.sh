@@ -74,6 +74,7 @@ python -m pip install -U pip
 python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
+python -m pip install --force-reinstall "huggingface_hub==0.10.1"
 
 echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
 python - <<'PYEOF'
