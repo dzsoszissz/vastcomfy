@@ -4,9 +4,11 @@
 #
 # Alapelvek (lásd VastAI_WhisperX-WebUI_Specifikacio_v4.md):
 #   - a gyári CUDA/PyTorch környezet NEM kerül újratelepítésre
-#   - a repo saját Install.sh-ja NEM fut le (mert venv-et hozna létre) —
-#     helyette a benne lévő 4 telepítési lépést futtatjuk közvetlenül,
-#     a Vast.ai image rendszer-Pythonjával
+#   - a repo saját Install.sh-ja NEM fut le (mert saját venv-et hozna
+#     létre) — helyette a benne lévő 4 telepítési lépést futtatjuk
+#     közvetlenül, a Vast.ai image gyári /venv/main-jében (lásd 0. lépés:
+#     ez NEM azonos a PROVISIONING_SCRIPT saját, elkülönített
+#     provisioner-venv-jével, amiben ez a szkript alapból elindul)
 #   - a repo modell-/kimeneti útvonalai (modules/utils/paths.py) hardkódoltan,
 #     a repo gyökeréhez képest relatívak — NEM environment változóból jönnek.
 #     Ezért a repót magát klónozzuk a /workspace alá: így a hardkódolt
@@ -21,6 +23,29 @@ echo "=== WhisperX-WebUI provisioning indul ==="
 
 # --- Kötelező environment változó ellenőrzése ---
 : "${HF_TOKEN:?HF_TOKEN nincs beállítva — a diarizációs modellhez kötelező}"
+
+###############################################################################
+# 0. A gyári /venv/main aktiválása
+#
+# FONTOS: a PROVISIONING_SCRIPT a Vast.ai saját, elkülönített
+# "provisioner" venv-jében fut (pl. /opt/instance-tools/provisioner/venv),
+# aminek SEMMI köze a konténer tényleges, torch/CUDA-t tartalmazó
+# futtatókörnyezetéhez. Ha ezt nem aktiváljuk explicit, minden ezután
+# következő "python"/"pip" hívás ebbe az üres, idegen venv-be telepítene,
+# ahonnan a szolgáltatás induláskor (Start Command) semmit nem érne el.
+###############################################################################
+echo "--- 0. Gyári venv aktiválása ---"
+if [ -f /venv/main/bin/activate ]; then
+    # shellcheck disable=SC1091
+    source /venv/main/bin/activate
+    echo "Aktiválva: /venv/main"
+else
+    echo "HIBA: /venv/main/bin/activate nem található — a provisioning leáll," >&2
+    echo "mert a rendszer-python/pip a rossz (provisioner) venv-be telepítene." >&2
+    exit 1
+fi
+echo "Aktív python: $(which python)"
+echo "Aktív pip:    $(which pip)"
 
 WORKSPACE_DIR="/workspace"
 REPO_DIR="${WORKSPACE_DIR}/WhisperX-WebUI"
@@ -46,26 +71,6 @@ apt-get install -y --no-install-recommends \
     libsndfile1 \
     python3-filelock
 rm -rf /var/lib/apt/lists/*
-
-echo "===== PYTHON ====="
-python --version
-which python
-
-echo "===== PIP ====="
-pip --version
-which pip
-
-echo "===== INSTALLED PACKAGES ====="
-python -m pip freeze | sort
-
-echo "===== TORCH ====="
-python - <<'PY'
-import torch
-print("torch:", torch.__version__)
-print("cuda :", torch.version.cuda)
-print("gpu  :", torch.cuda.is_available())
-PY
-
 
 ###############################################################################
 # 2. Repository klónozása / frissítése (idempotens — új instance-nál a
@@ -94,11 +99,6 @@ python -m pip install -U pip
 python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
-echo "===== INSTALLED VERSIONS ====="
-python -m pip freeze | grep -Ei 'torch|torchaudio|huggingface|pyannote|transformers|tokenizers|faster-whisper|ctranslate2'
-echo "=============================="
-
-
 
 echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
 python - <<'PYEOF'
@@ -124,38 +124,6 @@ mkdir -p "$BACKEND_CACHE_DIR"
 #    pyannote Pipeline.from_pretrained, MusicSeparator.update_model) —
 #    így később, első API-híváskor nem indul újabb letöltés.
 ###############################################################################
-echo "--- WhisperX HuggingFace API patch ---"
-
-python - <<'PY'
-from pathlib import Path
-import whisperx
-
-root = Path(whisperx.__file__).parent
-
-patched = []
-
-for rel in ("vads/pyannote.py", "asr.py"):
-    p = root / rel
-    if not p.exists():
-        continue
-
-    txt = p.read_text(encoding="utf-8")
-
-    new = txt.replace("use_auth_token=", "token=")
-    new = new.replace("use_auth_token =", "token =")
-    new = new.replace("use_auth_token=None", "token=None")
-    new = new.replace("use_auth_token = None", "token = None")
-
-    if new != txt:
-        p.write_text(new, encoding="utf-8")
-        patched.append(str(p))
-
-print("Patched:")
-for f in patched:
-    print("  ", f)
-PY
-find /workspace/WhisperX-WebUI -type f -name "*.py" \
-    -exec sed -i 's/use_auth_token=/token=/g' {} +
 echo "--- 5. Modellek előtöltése ---"
 
 echo "  faster-whisper large-v2 és large-v3..."
