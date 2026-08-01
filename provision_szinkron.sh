@@ -177,6 +177,255 @@ print("  diarize_pipeline.py javitva (use_auth_token -> token, model -> communit
 PYEOF
 
 ###############################################################################
+# 2c. Saját router hozzáadása a MEGLÉVŐ backendhez: /translate, /tts, /health
+#
+# Nem külön szolgáltatás/port — a WhisperX-WebUI-backend SAJÁT
+# backend/main.py-jába kötjük be, ugyanúgy, ahogy a repo saját routerei
+# (transcription_router, bgm_separation_router stb.) be vannak kötve. Ez
+# elkerüli a külön port Vast.ai-portlistába vételének problémáját.
+#
+# A router.py fájlt a repo saját backend/routers/ struktúrájába írjuk
+# (mint egy új alkönyvtár), a main.py-t pedig egy import + include_router
+# sorral bővítjük. Mivel mindkettő a repo része, a "git reset --hard"
+# minden futásnál töröl(het)i/visszaállítja őket — ezért ennek a lépésnek
+# is a checkout UTÁN, a backend indítása (7. lépés) ELŐTT kell futnia,
+# minden provisioning-futásnál újra.
+#
+# FONTOS VRAM-megfontolás: a NLLB/Racka-4B/F5-TTS modelleket SZÁNDÉKOSAN
+# NEM tesszük be a main.py lifespan()-jének eager-load listájába (ahogy a
+# whisper/vad/bgm-separation modellek be vannak) — azok @functools.lru_cache
+# miatt csak az ELSŐ /translate vagy /tts híváskor töltődnek be. Ha eager
+# lenne, a szerver induláskor egyszerre próbálná VRAM-ba tölteni az egész
+# whisper+diarizáció+UVR+forditas+TTS stacket, ami könnyen túlcsordulhatna
+# a 24 GB-os 3090-en.
+###############################################################################
+echo "--- 2c. Saját /translate, /tts router beillesztése a meglévő backendbe ---"
+
+mkdir -p "${REPO_DIR}/backend/routers/custom_ai"
+touch "${REPO_DIR}/backend/routers/custom_ai/__init__.py"
+
+cat > "${REPO_DIR}/backend/routers/custom_ai/router.py" <<'PYEOF'
+"""
+custom_ai/router.py — sajat router: forditas (NLLB-200 + Racka-4B) es
+magyar hangklonozas (F5-TTS). A backend/main.py koti be a meglevo
+WhisperX-WebUI FastAPI-alkalmazasba.
+
+##############################################################################
+##  FIGYELEM — LICENC KORLATOZAS!                                          ##
+##  A /tts vegpont a Maxdorger29/f5-tts-hungarian CC-BY-NC-4.0 licencu     ##
+##  sulyait hasznalja -> CSAK NEM KERESKEDELMI CELRA HASZNALHATO!          ##
+##  Lasd a provisioning szkript vonatkozo lepesenek kommentjeit.           ##
+##############################################################################
+"""
+import functools
+import io
+import os
+import tempfile
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+TRANSLATION_MODEL_DIR = os.environ.get("TRANSLATION_MODEL_DIR", "/workspace/models/Translation")
+F5TTS_HU_DIR = os.environ.get("F5TTS_HU_DIR", "/workspace/models/F5-TTS-Hungarian")
+
+custom_ai_router = APIRouter(prefix="/custom-ai", tags=["Custom AI (Translate + TTS)"])
+
+
+# ============================================================
+# Forditas: NLLB-200 1.3B (nyers forditas) -> Racka-4B (magyar stilizalas)
+# ============================================================
+
+class TranslateRequest(BaseModel):
+    text: str
+    source_lang: str = "eng_Latn"  # FLORES-200 nyelvkod
+    target_lang: str = "hun_Latn"
+    stylize: bool = True
+
+
+class TranslateResponse(BaseModel):
+    raw_translation: str
+    stylized_translation: str
+
+
+@functools.lru_cache
+def get_nllb():
+    import torch
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-1.3B", cache_dir=TRANSLATION_MODEL_DIR)
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        "facebook/nllb-200-1.3B", cache_dir=TRANSLATION_MODEL_DIR, torch_dtype=torch.float16
+    ).to("cuda")
+    return tokenizer, model
+
+
+@functools.lru_cache
+def get_racka():
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained("elte-nlp/Racka-4B", cache_dir=TRANSLATION_MODEL_DIR)
+    model = AutoModelForCausalLM.from_pretrained(
+        "elte-nlp/Racka-4B",
+        cache_dir=TRANSLATION_MODEL_DIR,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+    )
+    return tokenizer, model
+
+
+def nllb_translate(text: str, source_lang: str, target_lang: str) -> str:
+    import torch
+
+    tokenizer, model = get_nllb()
+    tokenizer.src_lang = source_lang
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    target_id = tokenizer.convert_tokens_to_ids(target_lang)
+    with torch.no_grad():
+        generated = model.generate(**inputs, forced_bos_token_id=target_id, max_new_tokens=512)
+    return tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
+
+
+def racka_stylize(raw_text: str, original_text: str) -> str:
+    import torch
+
+    tokenizer, model = get_racka()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Te egy profi magyar szinkron- es feliratforditó vagy. A feladatod, hogy egy "
+                "nyers, gépi fordítást természetes, folyékony, köznyelvi magyarra igazíts, "
+                "az eredeti jelentés megtartása mellett. Csak a javított mondatot add vissza, "
+                "semmi mást."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Eredeti szöveg: {original_text}\nNyers fordítás: {raw_text}\nJavított magyar mondat:",
+        },
+    ]
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        generated = model.generate(**inputs, max_new_tokens=256, do_sample=False)
+    output_ids = generated[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+
+@custom_ai_router.post("/translate", response_model=TranslateResponse)
+def translate(req: TranslateRequest):
+    try:
+        raw = nllb_translate(req.text, req.source_lang, req.target_lang)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NLLB fordítási hiba: {exc}")
+
+    if not req.stylize:
+        return TranslateResponse(raw_translation=raw, stylized_translation=raw)
+
+    try:
+        stylized = racka_stylize(raw, req.text)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Racka-4B stilizálási hiba: {exc}")
+
+    return TranslateResponse(raw_translation=raw, stylized_translation=stylized)
+
+
+# ============================================================
+# F5-TTS magyar hangklonozas — CC-BY-NC-4.0, CSAK NEM KERESKEDELMI CELRA!
+# ============================================================
+
+@functools.lru_cache
+def get_f5tts():
+    # A Maxdorger29/f5-tts-hungarian modellkartya sajat ajanlasa szerint:
+    # torchaudio.load lecserelese soundfile-ra platformfuggetlen betoltes
+    # miatt (ismert kompatibilitasi tuneteket kerul el).
+    import numpy as np
+    import soundfile as sf
+    import torch
+    import torchaudio
+
+    def _patched_load(fp, **kw):
+        data, sr = sf.read(str(fp), dtype="float32")
+        if data.ndim == 1:
+            data = data[np.newaxis, :]
+        else:
+            data = data.T
+        return torch.from_numpy(data), sr
+
+    torchaudio.load = _patched_load
+
+    from f5_tts.api import F5TTS
+
+    model = F5TTS(
+        model="F5TTS_v1_Base",
+        ckpt_file=os.path.join(F5TTS_HU_DIR, "model_last_final.safetensors"),
+        vocab_file=os.path.join(F5TTS_HU_DIR, "vocab.txt"),
+        device="cuda",
+        use_ema=True,
+    )
+    return model
+
+
+@custom_ai_router.post("/tts")
+async def tts(
+    ref_audio: UploadFile = File(..., description="Referencia hangminta (5-15 mp, pl. speaker_00.wav)"),
+    ref_text: str = Form(..., description="A referencia hang pontos átirata"),
+    gen_text: str = Form(..., description="A felolvasandó/generálandó magyar szöveg"),
+):
+    import soundfile as sf
+
+    model = get_f5tts()
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_ref:
+        tmp_ref.write(await ref_audio.read())
+        tmp_ref_path = tmp_ref.name
+
+    try:
+        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=ref_text, gen_text=gen_text)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"F5-TTS generálási hiba: {exc}")
+    finally:
+        os.unlink(tmp_ref_path)
+
+    buffer = io.BytesIO()
+    sf.write(buffer, wav, sr, format="WAV")
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="audio/wav")
+
+
+@custom_ai_router.get("/health")
+def health():
+    return {"status": "ok"}
+PYEOF
+
+python - <<PYEOF
+path = "${REPO_DIR}/backend/main.py"
+with open(path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+old_import = "from backend.routers.task.router import task_router"
+new_import = (
+    "from backend.routers.task.router import task_router\n"
+    "from backend.routers.custom_ai.router import custom_ai_router"
+)
+if old_import not in content:
+    raise SystemExit(f"Nem talalhato a vart import-sor a main.py-ban: {old_import!r}")
+content = content.replace(old_import, new_import, 1)
+
+old_include = "app.include_router(task_router)"
+new_include = "app.include_router(task_router)\napp.include_router(custom_ai_router)"
+if old_include not in content:
+    raise SystemExit(f"Nem talalhato a vart include_router sor a main.py-ban: {old_include!r}")
+content = content.replace(old_include, new_include, 1)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+print("  main.py javitva (custom_ai_router bekotve)")
+PYEOF
+
+###############################################################################
 # 3. Python függőségek — a repo saját telepítési lépései, rendszer-Pythonnal,
 #    venv nélkül (nem az Install.sh fut, csak a benne lévő 4 sor)
 ###############################################################################
@@ -495,4 +744,4 @@ echo "  F5-TTS magyar checkpoint helye: ${F5TTS_HU_DIR}"
 echo "  EMLEKEZTETO: ez a checkpoint CC-BY-NC-4.0 — csak nem-kereskedelmi hasznalatra!"
 df -h / | tail -1
 
-echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000). ==="
+echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000 — /transcription, /bgm-separation, /vad, /task, /custom-ai/translate, /custom-ai/tts). ==="
