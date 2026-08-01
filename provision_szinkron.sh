@@ -365,4 +365,56 @@ supervisorctl update
 echo "  whisperx-backend regisztrálva és elindítva a supervisor alatt (port 8000)"
 echo "  napló: /var/log/portal/whisperx-backend.log"
 
+###############################################################################
+# 8. Fordítási modellek előtöltése (NLLB-200 1.3B nyers fordítás +
+#    Racka-4B magyar stilizálás)
+#
+# Ez a szakasz NEM része a WhisperX-WebUI repónak — külön, a jövőbeli saját
+# fordítási szolgáltatáshoz készíti elő a modelleket, ugyanazzal az elvvel,
+# mint a Whisper/UVR/diarizáció: előtöltjük, hogy első hívásnál ne kelljen
+# letölteni.
+#
+# Miért Racka-4B, nem generikus Qwen2.5/Llama 3.1: sem a Qwen2.5, sem a
+# Llama 3.1 nem hivatalosan magyar-fókuszú (a Llama 3.1 nyelvlistáján a
+# magyar nincs rajta). A Racka-4B az ELTE NLP csoport kifejezetten magyarra
+# hangolt, Qwen3-4B-alapú modellje — a publikált benchmarkok szerint a
+# HuLU-n és OpenHuEval-en a nagyobb (8B) PULI-LlumiX-Llama-3.1 magyar
+# modellt is felülmúlja néhány feladaton, kisebb méret mellett.
+#
+# Miért snapshot_download, nem model-instantiate (mint a faster-whisper/
+# pyannote-nál): a transformers-modelleknél a snapshot_download csak a
+# fájlokat tölti le, nem tölti be a modellt memoriaba/GPU-ra — gyorsabb és
+# nem terheli feleslegesen a provisioning-folyamatot. Futásidőben a
+# tényleges fordítási szolgáltatás majd ugyanebből a cache_dir-ből
+# tölt be, újralétöltés nélkül.
+#
+# Diszkigény: kb. +10-15 GB (NLLB-200-1.3B ~5 GB, Racka-4B ~8 GB fp16-ban)
+# — ha szűkös a hely, ellenőrizd a "df -h /" kimenetet a lépés után.
+###############################################################################
+echo "--- 8. Fordítási modellek előtöltése (NLLB-200 1.3B, Racka-4B) ---"
+
+python -m pip install -q sentencepiece accelerate bitsandbytes
+
+TRANSLATION_MODEL_DIR="${WORKSPACE_DIR}/models/Translation"
+mkdir -p "$TRANSLATION_MODEL_DIR"
+
+python - <<PYEOF
+from huggingface_hub import snapshot_download
+
+print("  facebook/nllb-200-1.3B letoltese...")
+snapshot_download(
+    repo_id="facebook/nllb-200-1.3B",
+    cache_dir="${TRANSLATION_MODEL_DIR}",
+)
+
+print("  elte-nlp/Racka-4B letoltese...")
+snapshot_download(
+    repo_id="elte-nlp/Racka-4B",
+    cache_dir="${TRANSLATION_MODEL_DIR}",
+)
+PYEOF
+
+echo "  Fordítási modellek helye: ${TRANSLATION_MODEL_DIR}"
+df -h / | tail -1
+
 echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000). ==="
