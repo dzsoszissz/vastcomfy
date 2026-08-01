@@ -434,4 +434,65 @@ set -e
 echo "  Fordítási modellek helye: ${TRANSLATION_MODEL_DIR}"
 df -h / | tail -1
 
+###############################################################################
+# 9. F5-TTS (SWivid/F5-TTS, ComfyUI NELKUL, sima pip csomag + CLI/Python API)
+#    + a Maxdorger29/f5-tts-hungarian magyar hangklonozo checkpoint.
+#
+# ##############################################################################
+# ##  FIGYELEM — LICENC KORLATOZAS, NE FELEJTSD EL!                          ##
+# ##                                                                          ##
+# ##  A Maxdorger29/f5-tts-hungarian (es az alapja, SWivid/F5-TTS sajat      ##
+# ##  sulyai) CC-BY-NC-4.0 licenc alatt vannak, MERT az Emilia adathalmazon  ##
+# ##  lettek tanitva, ami kereskedelmi felhasznalast tilt.                   ##
+# ##                                                                          ##
+# ##  -> SZEMELYES / KUTATASI CEL: szabad hasznalni.                         ##
+# ##  -> KERESKEDELMI CEL (ugyfelmunka, reklam, brand-videó stb.): TILOS      ##
+# ##     ezekkel a sulyokkal, amig nincs kulon kereskedelmi licenc VAGY       ##
+# ##     at nem valtunk mas licencu modellre (pl. XTTS-v2 / Coqui, ami       ##
+# ##     tamogat magyart es mashogy licencelt).                              ##
+# ##                                                                          ##
+# ##  A jelenlegi celunk (2026-08) NEM kereskedelmi -> egyelore rendben.     ##
+# ##  DE HA EZ VALTOZIK, ELOSZOR EZT A LEPEST KELL UJRAGONDOLNI!             ##
+# ##############################################################################
+#
+# Maga az F5-TTS Python-csomag (nem a sulyok) MIT licencu, es ONALLOAN,
+# ComfyUI nelkul is teljesen hasznalhato (f5-tts_infer-cli / Python API).
+###############################################################################
+echo "--- 9. F5-TTS + magyar checkpoint előtöltése (NEM KERESKEDELMI CÉLRA!) ---"
+
+set +e
+
+python -m pip install -q f5-tts
+if [ $? -ne 0 ]; then
+    echo "  FIGYELEM: az f5-tts csomag telepitese nem sikerult, a lepes kihagyva." >&2
+fi
+
+F5TTS_HU_DIR="${WORKSPACE_DIR}/models/F5-TTS-Hungarian"
+mkdir -p "$F5TTS_HU_DIR"
+
+python - <<PYEOF
+from huggingface_hub import hf_hub_download
+
+print("  Maxdorger29/f5-tts-hungarian letoltese (model + vocab)...")
+hf_hub_download(
+    repo_id="Maxdorger29/f5-tts-hungarian",
+    filename="model_last_final.safetensors",
+    local_dir="${F5TTS_HU_DIR}",
+)
+hf_hub_download(
+    repo_id="Maxdorger29/f5-tts-hungarian",
+    filename="vocab.txt",
+    local_dir="${F5TTS_HU_DIR}",
+)
+PYEOF
+if [ $? -ne 0 ]; then
+    echo "  FIGYELEM: a magyar F5-TTS checkpoint elotoltese nem sikerult teljesen — a backend ettol meg fut. Probald ujra kezzel kesobb." >&2
+fi
+
+set -e
+
+echo "  F5-TTS magyar checkpoint helye: ${F5TTS_HU_DIR}"
+echo "  EMLEKEZTETO: ez a checkpoint CC-BY-NC-4.0 — csak nem-kereskedelmi hasznalatra!"
+df -h / | tail -1
+
 echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000). ==="
