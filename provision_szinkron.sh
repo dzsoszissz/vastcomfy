@@ -3,7 +3,12 @@
 # Vast.ai provisioning szkript — chboishabba/WhisperX-WebUI
 #
 # Alapelvek (lásd VastAI_WhisperX-WebUI_Specifikacio_v4.md):
-#   - a gyári CUDA/PyTorch környezet NEM kerül újratelepítésre
+#   - EZ A SZKRIPT A vastai/pytorch:2.8.0-cuda-12.6.3-py310-24.04-2026-06-15
+#     IMAGE-HEZ KÉSZÜLT (nem a korábbi 2.7.1-hez). A friss torch 2.8.0
+#     gyárilag kielégíti a whisperx/pyannote.audio saját torch~=2.8.0
+#     követelményét, így a pip nem próbál konfliktusos verziót erőltetni,
+#     és a friss pyannote.audio (>=4.0) + huggingface_hub (>=0.28.1)
+#     kombó natívan működik — nincs szükség monkeypatch-ekre.
 #   - a repo saját Install.sh-ja NEM fut le (mert saját venv-et hozna
 #     létre) — helyette a benne lévő 4 telepítési lépést futtatjuk
 #     közvetlenül, a Vast.ai image gyári /venv/main-jében (lásd 0. lépés:
@@ -35,7 +40,8 @@ echo "=== WhisperX-WebUI provisioning indul ==="
 # aminek SEMMI köze a konténer tényleges, torch/CUDA-t tartalmazó
 # futtatókörnyezetéhez. Ha ezt nem aktiváljuk explicit, minden ezután
 # következő "python"/"pip" hívás ebbe az üres, idegen venv-be telepítene,
-# ahonnan a szolgáltatás induláskor (Start Command) semmit nem érne el.
+# és a 7. lépésben regisztrált supervisor-szolgáltatás sem a helyes
+# venv-ből indulna.
 ###############################################################################
 echo "--- 0. Gyári venv aktiválása ---"
 if [ -f /venv/main/bin/activate ]; then
@@ -94,83 +100,37 @@ fi
 cd "$REPO_DIR"
 
 ###############################################################################
-# 2b. Kompatibilitási foltok: huggingface_hub use_auth_token -> token,
-#     torch.load weights_only (PyTorch 2.6+)
+# 2b. Upstream-fix átvétele: use_auth_token -> token
 #
-# FONTOS: verzió-pinnelést (pyannote.audio<4.0) NE próbáljunk — a
-# pyannote-audio<4.0 a "lightning" PyPI csomagra támaszkodik, amit a PyPI
-# adminjai jelenleg KARANTÉNBA HELYEZTEK (m-bain/whisperX issue #1412,
-# ~2026-04-30) — ez a csomag most senkinek nem telepíthető, függetlenül
-# a mi környezetünktől. Ez egy külső, jelenleg fennálló ellátási lánc
-# probléma, nem verzióütközés, amit pinneléssel meg lehetne kerülni.
+# A repo modules/diarize/diarize_pipeline.py-ja egy 2023-24-ben befagyott
+# másolata a https://github.com/m-bain/whisperX/blob/main/whisperx/diarize.py
+# fájlnak. Az AKTUÁLIS upstream verzió már "token=token"-nel hívja a
+# pyannote.audio Pipeline.from_pretrained()-jét — ez a repo befagyott
+# másolata még a régi "use_auth_token="-t használja, ami a friss
+# pyannote.audio (>=4.0) belső hf_hub_download()-hívásában TypeError-t dob.
 #
-# A requirements.txt sem a pyannote.audio-t, sem a huggingface_hub-ot nem
-# pinneli verzióhoz, ezért a legújabb (4.x) pyannote.audio települ. Ennek
-# Pipeline.from_pretrained()-je a saját belső hf_hub_download()-hívásában
-# még mindig "use_auth_token"-t használ — ez TypeError-t dob, mind itt
-# preload alatt, mind élesben minden diarizációs API-hívásnál.
-#
-# Emellett PyTorch 2.6-tól a torch.load() alapértelmezetten weights_only=True
-# módban fut (biztonsági célból). A pyannote szegmentációs modellje egy
-# régebbi PyTorch-Lightning-mentésű checkpoint, ami ezzel a szigorú módban
-# nem tölthető be (UnpicklingError egy torch.torch_version.TorchVersion
-# globálra). Mivel hivatalos, HF_TOKEN-nel hitelesített, trusted forrásból
-# (huggingface.co/pyannote) töltjük le, biztonságosan visszaállíthatjuk
-# weights_only=False-ra erre a folyamatra.
-#
-# Mindkét foltot a repo forrásába illesztjük, ugyanabban a fájlban, ahol a
-# repo saját maga is hasonló kompatibilitási foltot alkalmaz a
-# torchaudio.AudioMetaData hiányára. Mivel ez a fájl a "git reset --hard"-tól
-# minden futásnál pristine állapotból indul, ezt a foltot minden
-# provisioning-futásnál újra alkalmazni kell — ezért itt, a checkout után
-# azonnal, MÉG A PIP INSTALL ELŐTT (a folt maga nem függ a telepített
-# csomagoktól, csak importáláskor fut le, amikor a modul már be van
-# töltve).
+# Nem monkeypatch-elünk (nincs rá szükség a friss torch 2.8.0 / pyannote.audio
+# 4.x / huggingface_hub kombónál) — egyszerűen átvesszük az upstream saját,
+# egysoros javítását a hívási helyen. Mivel ez a fájl a "git reset --hard"-tól
+# minden futásnál pristine állapotból indul, ezt minden provisioning-futásnál
+# újra kell alkalmazni.
 ###############################################################################
-echo "--- 2b. Kompatibilitási foltok (hf_hub_download, torch.load) ---"
+echo "--- 2b. use_auth_token -> token (upstream-fix átvétele) ---"
 python - <<PYEOF
 path = "${REPO_DIR}/modules/diarize/diarize_pipeline.py"
 with open(path, "r", encoding="utf-8") as f:
     content = f.read()
 
-marker = "from pyannote.audio import Pipeline"
-patch = '''import huggingface_hub as _hf_hub
+old = "model_name, use_auth_token=use_auth_token, cache_dir=cache_dir"
+new = "model_name, token=use_auth_token, cache_dir=cache_dir"
 
-if not getattr(_hf_hub.hf_hub_download, "_use_auth_token_compat", False):
-    _original_hf_hub_download = _hf_hub.hf_hub_download
+if old not in content:
+    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {old!r}")
 
-    def _hf_hub_download_compat(*args, **kwargs):
-        if "use_auth_token" in kwargs:
-            kwargs.setdefault("token", kwargs.pop("use_auth_token"))
-        return _original_hf_hub_download(*args, **kwargs)
-
-    _hf_hub_download_compat._use_auth_token_compat = True
-    _hf_hub.hf_hub_download = _hf_hub_download_compat
-
-import torch as _torch
-
-if not getattr(_torch.load, "_weights_only_compat", False):
-    _original_torch_load = _torch.load
-
-    def _torch_load_compat(*args, **kwargs):
-        kwargs.setdefault("weights_only", False)
-        return _original_torch_load(*args, **kwargs)
-
-    _torch_load_compat._weights_only_compat = True
-    _torch.load = _torch_load_compat
-
-'''
-
-if marker not in content:
-    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {marker!r}")
-
-if "_use_auth_token_compat" not in content:
-    content = content.replace(marker, patch + marker, 1)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    print("  diarize_pipeline.py befoltozva (use_auth_token + torch.load kompatibilitas)")
-else:
-    print("  diarize_pipeline.py mar tartalmazza a foltokat")
+content = content.replace(old, new, 1)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+print("  diarize_pipeline.py javitva (use_auth_token -> token)")
 PYEOF
 
 ###############################################################################
@@ -183,7 +143,7 @@ python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
 
-echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
+echo "Torch/CUDA build ellenőrzése (2.8.0-t várunk, a friss image gyári torch-ja):"
 python - <<'PYEOF'
 import torch
 print(f"  torch={torch.__version__}  cuda_available={torch.cuda.is_available()}")
