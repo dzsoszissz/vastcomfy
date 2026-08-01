@@ -100,7 +100,8 @@ fi
 cd "$REPO_DIR"
 
 ###############################################################################
-# 2b. Upstream-fix átvétele: use_auth_token -> token
+# 2b. Upstream-fix átvétele: use_auth_token -> token, ÉS modellváltás
+#     speaker-diarization-3.1 -> speaker-diarization-community-1
 #
 # A repo modules/diarize/diarize_pipeline.py-ja egy 2023-24-ben befagyott
 # másolata a https://github.com/m-bain/whisperX/blob/main/whisperx/diarize.py
@@ -111,26 +112,68 @@ cd "$REPO_DIR"
 #
 # Nem monkeypatch-elünk (nincs rá szükség a friss torch 2.8.0 / pyannote.audio
 # 4.x / huggingface_hub kombónál) — egyszerűen átvesszük az upstream saját,
-# egysoros javítását a hívási helyen. Mivel ez a fájl a "git reset --hard"-tól
-# minden futásnál pristine állapotból indul, ezt minden provisioning-futásnál
-# újra kell alkalmazni.
+# egysoros javítását a hívási helyen.
+#
+# MÁSODIK JAVÍTÁS: a "pyannote/speaker-diarization-3.1" a saját HF-oldala
+# szerint egy "Legacy Collection, Compatible with pyannote.audio 3.4.x" —
+# NEM a friss 4.x könyvtárhoz készült. A pyannote.audio 4.0.7 emiatt a 3.1
+# betöltésekor is megpróbál egy PLDA-komponenst letölteni a friss
+# "pyannote/speaker-diarization-community-1" repóból (belső könyvtár-logika,
+# nem a 3.1 modell saját config.yaml-ja írja elő) — ez egy plusz, korábban
+# nem elfogadott gated modellt igényelne. Mivel a community-1 kifejezetten
+# a 4.x könyvtárhoz készült (és a HF-oldal szerint pontosabb is, mint a
+# 3.1), a modell-alapértelmezést átírjuk rá — ezzel a PLDA már a "helyi",
+# elvárt repóból jön, nem egy külön, nem dokumentált függőségként. A
+# community-1 ráadásul a segmentation-t is saját magában tartalmazza, nem
+# kell hozzá külön "pyannote/segmentation-3.0" elfogadás.
+#
+# Mivel ez a fájl a "git reset --hard"-tól minden futásnál pristine
+# állapotból indul, ezt minden provisioning-futásnál újra kell alkalmazni.
 ###############################################################################
-echo "--- 2b. use_auth_token -> token (upstream-fix átvétele) ---"
+echo "--- 2b. use_auth_token -> token + community-1 modellváltás ---"
 python - <<PYEOF
 path = "${REPO_DIR}/modules/diarize/diarize_pipeline.py"
 with open(path, "r", encoding="utf-8") as f:
     content = f.read()
 
-old = "model_name, use_auth_token=use_auth_token, cache_dir=cache_dir"
-new = "model_name, token=use_auth_token, cache_dir=cache_dir"
+old_token = "model_name, use_auth_token=use_auth_token, cache_dir=cache_dir"
+new_token = "model_name, token=use_auth_token, cache_dir=cache_dir"
+if old_token not in content:
+    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {old_token!r}")
+content = content.replace(old_token, new_token, 1)
 
-if old not in content:
-    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {old!r}")
+old_model = 'model_name="pyannote/speaker-diarization-3.1"'
+new_model = 'model_name="pyannote/speaker-diarization-community-1"'
+if old_model not in content:
+    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {old_model!r}")
+content = content.replace(old_model, new_model, 1)
 
-content = content.replace(old, new, 1)
+# Harmadik javitas: a pyannote.audio 4.x-ben a pipeline hivasa mar nem
+# kozvetlenul egy Annotation-t (itertracks()-kepes objektumot) ad vissza,
+# hanem egy DiarizeOutput dataclass-t, aminek a "speaker_diarization" mezoje
+# tartalmazza a tenyleges Annotation-t (forras: pyannote/audio/pipelines/
+# speaker_diarization.py, "class DiarizeOutput", "speaker_diarization:
+# Annotation" mezo). A repo befagyott __call__-ja meg a regi, kozvetlen
+# visszaterest feltetelezi -> AttributeError: 'DiarizeOutput' object has
+# no attribute 'itertracks'. hasattr-rel vedekezunk, hatha egy regebbi
+# pyannote-verzio meg kozvetlenul Annotation-t adna vissza.
+old_call = '''        segments = self.model(
+            audio_data, min_speakers=min_speakers, max_speakers=max_speakers
+        )
+        diarize_df = pd.DataFrame('''
+new_call = '''        segments = self.model(
+            audio_data, min_speakers=min_speakers, max_speakers=max_speakers
+        )
+        if hasattr(segments, "speaker_diarization"):
+            segments = segments.speaker_diarization
+        diarize_df = pd.DataFrame('''
+if old_call not in content:
+    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {old_call!r}")
+content = content.replace(old_call, new_call, 1)
+
 with open(path, "w", encoding="utf-8") as f:
     f.write(content)
-print("  diarize_pipeline.py javitva (use_auth_token -> token)")
+print("  diarize_pipeline.py javitva (use_auth_token -> token, model -> community-1, DiarizeOutput kicsomagolas)")
 PYEOF
 
 ###############################################################################
@@ -198,7 +241,7 @@ for size in ("large-v2", "large-v3"):
     WhisperModel(size, download_root=model_dir, device="cpu", compute_type="int8")
 PYEOF
 
-echo "  pyannote/speaker-diarization-3.1 (diarizáció, segmentation-3.0-t is behúzza)..."
+echo "  pyannote/speaker-diarization-community-1 (diarizáció; a segmentation és embedding is ebben a repóban van, külön segmentation-3.0 elfogadás nem kell)..."
 # Fontos: a repo SAJÁT modules/diarize/diarize_pipeline.py moduljának
 # DiarizationPipeline osztályán keresztül töltjük elő, NEM közvetlen
 # pyannote.audio importtal. A diarize_pipeline.py modul szinten
