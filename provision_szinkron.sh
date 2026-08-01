@@ -365,7 +365,12 @@ def translate_batch_with_context(segments: list) -> list:
                 "angol párbeszédét kapod, időrendi sorrendben, beszélő-címkékkel. Fordítsd le "
                 "természetes, folyékony, köznyelvi magyarra, ÚGY, HOGY figyelembe veszed a "
                 "teljes beszélgetés kontextusát, és konzisztens stílust/hangnemet tartasz meg "
-                "beszélőnként az egész jeleneten át."
+                "beszélőnként az egész jeleneten át. FONTOS: ez egy MEGLÉVŐ párbeszéd HŰ "
+                "fordítása, nem új tartalom írása — a durva kifejezéseket, sértéseket és "
+                "trágár szavakat is PONTOSAN, a megfelelő magyar megfelelőjükkel add vissza "
+                "(pl. 'idiot' -> 'hülye'/'idióta', ne kerülő, elmosódott vagy kitalált szót "
+                "használj helyettük). A regiszter (durvaság szintje) hű megtartása a fordítás "
+                "minőségének alapkövetelménye, pont úgy, mint bármely más szónál."
             ),
         },
         {
@@ -766,7 +771,15 @@ EOF
 
 supervisorctl reread
 supervisorctl update
-echo "  whisperx-backend regisztrálva és elindítva a supervisor alatt (port 8000)"
+# FONTOS (valos hiba alapjan hozzaadva): a "reread"+"update" ONLY az UJ
+# vagy megvaltozott .conf-fajlokat veszi eszre — ha a whisperx-backend MAR
+# fut egy korabbi provisioning-futasbol, a folyamat memoriajaban meg a
+# REGI router.py van betoltve, meg akkor is, ha a lemezen mar a friss
+# valtozat van. Explicit restart kell, KULONBEN a router.py-ban tett
+# valtoztatasok (uj vegpontok, promptmodositasok stb.) nem lepnek
+# ervenybe ujrafuttataskor — ez okozta a "/custom-ai/separate 404" hibat.
+supervisorctl restart whisperx-backend
+echo "  whisperx-backend regisztrálva és (újra)indítva a supervisor alatt (port 8000)"
 echo "  napló: /var/log/portal/whisperx-backend.log"
 
 ###############################################################################
@@ -845,13 +858,13 @@ export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
 # forditas, max_tokens felso hatara 24576, ld. router.py) 32768 bovel
 # eleg, es jelentosen kisebb KV-cache-et igenyel.
 #
-# --sleep-idle-seconds 60 (2026-08, valos hiba alapjan hozzaadva): eles
+# --sleep-idle-seconds 6 (2026-08, valos hiba alapjan hozzaadva): eles
 # tesztunk kimutatta, hogy a llama-server allandoan, TETLENUL is majdnem
 # a teljes VRAM-ot (24115/24576 MiB) lefoglalva tartotta, ami miatt a
 # Whisper-modell betoltese "CUDA failed with error out of memory" hibaval
 # elhasalt. A llama.cpp sajat, natív megoldasa erre a --sleep-idle-seconds
 # kapcsolo (PR #18228, 2026 januar): a szerver FOLYAMAT eleiben marad,
-# de 60 mp inaktivitas utan a modellt es a KV-cache-et KIURITI a VRAM-bol
+# de 6 mp inaktivitas utan a modellt es a KV-cache-et KIURITI a VRAM-bol
 # — a kovetkezo tenyleges keres automatikusan visszatolti. A /health
 # vegpontunk KIFEJEZETTEN nem szamit "aktivitasnak", tehat allapot-
 # ellenorzessel nem tartjuk eberen feleslegesen.
@@ -882,7 +895,7 @@ EOF
     supervisorctl update
     echo "  qwen-translate (llama-server) regisztrálva a supervisor alatt (port 8002)"
     echo "  napló: /var/log/portal/qwen-translate.log"
-    echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) most, első induláskor töltődik le, majd a modell 60 mp inaktivitás után automatikusan kiürül a VRAM-ból (--sleep-idle-seconds)."
+    echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) most, első induláskor töltődik le, majd a modell 6 mp inaktivitás után automatikusan kiürül a VRAM-ból (--sleep-idle-seconds)."
 else
     echo "  FIGYELEM: nem talalhato a lefordított llama-server binaris ($LLAMA_SERVER_BIN) — a qwen-translate szolgaltatas nem lett regisztralva." >&2
 fi
