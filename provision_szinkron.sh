@@ -91,30 +91,60 @@ fi
 cd "$REPO_DIR"
 
 ###############################################################################
-# 2b. Kompatibilitási folt: torch.load weights_only (PyTorch 2.6+)
+# 2b. Kompatibilitási foltok: huggingface_hub use_auth_token -> token,
+#     torch.load weights_only (PyTorch 2.6+)
 #
-# PyTorch 2.6-tól a torch.load() alapértelmezetten weights_only=True módban
-# fut (biztonsági célból). A pyannote szegmentációs modellje egy régebbi
-# PyTorch-Lightning-mentésű checkpoint, ami ezzel a szigorú móddal nem
-# tölthető be (UnpicklingError egy torch.torch_version.TorchVersion
+# FONTOS: verzió-pinnelést (pyannote.audio<4.0) NE próbáljunk — a
+# pyannote-audio<4.0 a "lightning" PyPI csomagra támaszkodik, amit a PyPI
+# adminjai jelenleg KARANTÉNBA HELYEZTEK (m-bain/whisperX issue #1412,
+# ~2026-04-30) — ez a csomag most senkinek nem telepíthető, függetlenül
+# a mi környezetünktől. Ez egy külső, jelenleg fennálló ellátási lánc
+# probléma, nem verzióütközés, amit pinneléssel meg lehetne kerülni.
+#
+# A requirements.txt sem a pyannote.audio-t, sem a huggingface_hub-ot nem
+# pinneli verzióhoz, ezért a legújabb (4.x) pyannote.audio települ. Ennek
+# Pipeline.from_pretrained()-je a saját belső hf_hub_download()-hívásában
+# még mindig "use_auth_token"-t használ — ez TypeError-t dob, mind itt
+# preload alatt, mind élesben minden diarizációs API-hívásnál.
+#
+# Emellett PyTorch 2.6-tól a torch.load() alapértelmezetten weights_only=True
+# módban fut (biztonsági célból). A pyannote szegmentációs modellje egy
+# régebbi PyTorch-Lightning-mentésű checkpoint, ami ezzel a szigorú módban
+# nem tölthető be (UnpicklingError egy torch.torch_version.TorchVersion
 # globálra). Mivel hivatalos, HF_TOKEN-nel hitelesített, trusted forrásból
 # (huggingface.co/pyannote) töltjük le, biztonságosan visszaállíthatjuk
-# weights_only=False-ra. Ez torch-verzió miatti, nem pyannote-verzió miatti
-# probléma, tehát verzió-pinneléssel nem küszöbölhető ki — marad a
-# forráskód-szintű folt, ugyanabban a fájlban és mintában, ahol a repo
-# saját maga is hasonlót alkalmaz a torchaudio.AudioMetaData hiányára.
-# Mivel ez a fájl a "git reset --hard"-tól minden futásnál pristine
-# állapotból indul, ezt a foltot minden provisioning-futásnál újra
-# alkalmazni kell — ezért itt, a checkout után azonnal.
+# weights_only=False-ra erre a folyamatra.
+#
+# Mindkét foltot a repo forrásába illesztjük, ugyanabban a fájlban, ahol a
+# repo saját maga is hasonló kompatibilitási foltot alkalmaz a
+# torchaudio.AudioMetaData hiányára. Mivel ez a fájl a "git reset --hard"-tól
+# minden futásnál pristine állapotból indul, ezt a foltot minden
+# provisioning-futásnál újra alkalmazni kell — ezért itt, a checkout után
+# azonnal, MÉG A PIP INSTALL ELŐTT (a folt maga nem függ a telepített
+# csomagoktól, csak importáláskor fut le, amikor a modul már be van
+# töltve).
 ###############################################################################
-echo "--- 2b. Kompatibilitási folt (torch.load weights_only) ---"
+echo "--- 2b. Kompatibilitási foltok (hf_hub_download, torch.load) ---"
 python - <<PYEOF
 path = "${REPO_DIR}/modules/diarize/diarize_pipeline.py"
 with open(path, "r", encoding="utf-8") as f:
     content = f.read()
 
 marker = "from pyannote.audio import Pipeline"
-patch = '''import torch as _torch
+patch = '''import huggingface_hub as _hf_hub
+
+if not getattr(_hf_hub.hf_hub_download, "_use_auth_token_compat", False):
+    _original_hf_hub_download = _hf_hub.hf_hub_download
+
+    def _hf_hub_download_compat(*args, **kwargs):
+        if "use_auth_token" in kwargs:
+            kwargs.setdefault("token", kwargs.pop("use_auth_token"))
+        return _original_hf_hub_download(*args, **kwargs)
+
+    _hf_hub_download_compat._use_auth_token_compat = True
+    _hf_hub.hf_hub_download = _hf_hub_download_compat
+
+import torch as _torch
 
 if not getattr(_torch.load, "_weights_only_compat", False):
     _original_torch_load = _torch.load
@@ -131,13 +161,13 @@ if not getattr(_torch.load, "_weights_only_compat", False):
 if marker not in content:
     raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {marker!r}")
 
-if "_weights_only_compat" not in content:
+if "_use_auth_token_compat" not in content:
     content = content.replace(marker, patch + marker, 1)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    print("  diarize_pipeline.py befoltozva (torch.load weights_only kompatibilitas)")
+    print("  diarize_pipeline.py befoltozva (use_auth_token + torch.load kompatibilitas)")
 else:
-    print("  diarize_pipeline.py mar tartalmazza a foltot")
+    print("  diarize_pipeline.py mar tartalmazza a foltokat")
 PYEOF
 
 ###############################################################################
@@ -149,16 +179,6 @@ python -m pip install -U pip
 python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
-
-# A requirements.txt sem a pyannote.audio-t, sem a huggingface_hub-ot nem
-# pinneli verzióhoz. A pyannote.audio 4.0 elhagyta a "use_auth_token"
-# paramétert (ez az upstream m-bain/whisperX projekt saját, hivatalosan
-# dokumentált, ismert törése is — issue #1241: "pyannote 4 has breaking
-# changes including use_auth_token", ajánlott workaround: pyannote-audio
-# pinnelése 4.0 alá). Ahelyett hogy ezt monkeypatch-csel kerülnénk meg,
-# egyszerűen egy még kompatibilis verzióra rögzítjük.
-echo "pyannote.audio és huggingface_hub rögzítése kompatibilis verzióra..."
-python -m pip install "pyannote.audio==3.4.0" "huggingface_hub<1.0"
 
 echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
 python - <<'PYEOF'
@@ -219,6 +239,16 @@ DiarizationPipeline(
 PYEOF
 
 echo "  UVR-MDX-NET-Inst_HQ_4 (BGM separation)..."
+# MEGJEGYZÉS: a jhj0517/ultimatevocalremover_api csomagnak (amit a repo
+# "uvr" néven használ) van egy dokumentált, ismert hibája (jhj0517/
+# Whisper-WebUI issue #577): a modell-létezés ellenőrzésekor NEM a nekünk
+# átadott model_dir-t nézi, hanem egy saját, a site-packages alá
+# hardkódolt útvonalat — emiatt a modell újra letöltődhet minden
+# instance-indításkor, FÜGGETLENÜL attól, hogy mi hova mentettük.
+# Ez a modell kicsi (~60-120 MB, nem a 3 GB-os Whisper-modellek
+# nagyságrendje), tehát ha ez be is következik, nem drága és nem
+# blokkolja a szolgáltatást — de a lenti "find" kiírja a tényleges
+# helyét, hogy lássuk, kell-e emiatt külön lépés.
 python - <<PYEOF
 import sys
 sys.path.insert(0, "${REPO_DIR}")
@@ -227,6 +257,8 @@ from modules.uvr.music_separator import MusicSeparator
 sep = MusicSeparator(model_dir="${UVR_MODEL_DIR}", output_dir="${OUTPUT_DIR}")
 sep.update_model(model_name="UVR-MDX-NET-Inst_HQ_4", device="cpu")
 PYEOF
+echo "  UVR modellfájl(ok) tényleges helye a lemezen:"
+find / -xdev -iname "*UVR-MDX-NET*" -not -path "*/proc/*" 2>/dev/null | sed 's/^/    /'
 
 ###############################################################################
 # 6. Backend konfiguráció igazítása
