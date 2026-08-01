@@ -74,6 +74,10 @@ python -m pip install -U pip
 python scripts/install_openai_whisper.py
 python -m pip install -r requirements.txt
 python -m pip install -r backend/requirements-backend.txt
+echo "===== INSTALLED VERSIONS ====="
+python -m pip freeze | grep -Ei 'torch|torchaudio|huggingface|pyannote|transformers|tokenizers|faster-whisper|ctranslate2'
+echo "=============================="
+
 python -m pip install --force-reinstall "huggingface_hub==0.10.1"
 
 echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
