@@ -52,7 +52,7 @@ REPO_DIR="${WORKSPACE_DIR}/WhisperX-WebUI"
 REPO_URL="https://github.com/chboishabba/WhisperX-WebUI"
 
 FASTER_WHISPER_MODEL_DIR="${REPO_DIR}/models/Whisper/faster-whisper"
-DIARIZATION_MODEL_DIR="${REPO_DIR}/models/Whisper/whisperx/diarization"
+DIARIZATION_MODEL_DIR="${REPO_DIR}/models/Diarization"
 UVR_MODEL_DIR="${REPO_DIR}/models/UVR/MDX_Net_Models"
 OUTPUT_DIR="${REPO_DIR}/outputs"
 BACKEND_CACHE_DIR="${REPO_DIR}/backend/cache"
@@ -89,6 +89,56 @@ else
 fi
 
 cd "$REPO_DIR"
+
+###############################################################################
+# 2b. Kompatibilitási folt: huggingface_hub use_auth_token -> token
+#
+# A requirements.txt sem a pyannote.audio-t, sem a huggingface_hub-ot nem
+# pinneli verzióhoz. Az újabb huggingface_hub kiadások eltávolították a
+# "use_auth_token" paramétert, de a pyannote.audio Pipeline.from_pretrained()
+# a saját belső hf_hub_download()-hívásában még mindig ezt használja — ez
+# TypeError-t dob, mind itt preload alatt, mind élesben minden diarizációs
+# API-hívásnál. Verzió-pinnelés helyett (ami törékeny, mert nem tudni
+# pontosan melyik verziónál szűnt meg a paraméter) magát a repo forrását
+# foltozzuk — ugyanabban a fájlban, ahol a repo saját maga is hasonló
+# kompatibilitási foltot alkalmaz a torchaudio.AudioMetaData hiányára.
+# Mivel ez a fájl a "git reset --hard"-tól minden futásnál pristine
+# állapotból indul, ezt a foltot minden provisioning-futásnál újra
+# alkalmazni kell — ezért itt, a checkout után azonnal.
+###############################################################################
+echo "--- 2b. hf_hub_download kompatibilitási folt ---"
+python - <<PYEOF
+path = "${REPO_DIR}/modules/diarize/diarize_pipeline.py"
+with open(path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+marker = "from pyannote.audio import Pipeline"
+patch = '''import huggingface_hub as _hf_hub
+
+if not getattr(_hf_hub.hf_hub_download, "_use_auth_token_compat", False):
+    _original_hf_hub_download = _hf_hub.hf_hub_download
+
+    def _hf_hub_download_compat(*args, **kwargs):
+        if "use_auth_token" in kwargs:
+            kwargs.setdefault("token", kwargs.pop("use_auth_token"))
+        return _original_hf_hub_download(*args, **kwargs)
+
+    _hf_hub_download_compat._use_auth_token_compat = True
+    _hf_hub.hf_hub_download = _hf_hub_download_compat
+
+'''
+
+if marker not in content:
+    raise SystemExit(f"Nem talalhato a vart sor a diarize_pipeline.py-ban: {marker!r}")
+
+if "_use_auth_token_compat" not in content:
+    content = content.replace(marker, patch + marker, 1)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("  diarize_pipeline.py befoltozva (use_auth_token -> token kompatibilitas)")
+else:
+    print("  diarize_pipeline.py mar tartalmazza a foltot")
+PYEOF
 
 ###############################################################################
 # 3. Python függőségek — a repo saját telepítési lépései, rendszer-Pythonnal,
