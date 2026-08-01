@@ -191,7 +191,7 @@ PYEOF
 # is a checkout UTÁN, a backend indítása (7. lépés) ELŐTT kell futnia,
 # minden provisioning-futásnál újra.
 #
-# FONTOS VRAM-megfontolás: a NLLB/Qwen3-Stylizer/F5-TTS modelleket
+# FONTOS VRAM-megfontolás: a Qwen3-Stylizer/F5-TTS modelleket
 # SZÁNDÉKOSAN NEM tesszük be a main.py lifespan()-jének eager-load
 # listájába (ahogy a whisper/vad/bgm-separation modellek be vannak) —
 # azok @functools.lru_cache miatt csak az ELSŐ /translate vagy /tts
@@ -206,7 +206,7 @@ touch "${REPO_DIR}/backend/routers/custom_ai/__init__.py"
 
 cat > "${REPO_DIR}/backend/routers/custom_ai/router.py" <<'PYEOF'
 """
-custom_ai/router.py — sajat router: forditas (NLLB-200 + Qwen3-4B-Instruct-2507)
+custom_ai/router.py — sajat router: forditas (HTTP-hivas a kulon futo qwen-translate/llama-server-hez, Qwen3.6-27B GGUF, thinking-kepes)
 es magyar hangklonozas (F5-TTS). A backend/main.py koti be a meglevo
 WhisperX-WebUI FastAPI-alkalmazasba.
 
@@ -229,167 +229,36 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-TRANSLATION_MODEL_DIR = os.environ.get("TRANSLATION_MODEL_DIR", "/workspace/models/Translation")
 F5TTS_HU_DIR = os.environ.get("F5TTS_HU_DIR", "/workspace/models/F5-TTS-Hungarian")
 
 custom_ai_router = APIRouter(prefix="/custom-ai", tags=["Custom AI (Translate + TTS)"])
 
 
 # ============================================================
-# Forditas: NLLB-200 1.3B (nyers forditas) -> Qwen3-4B-Instruct-2507
-# (magyar stilizalas)
+# Forditas: Qwen3.6-27B, DE MOST GGUF-kent, llama.cpp/llama-server-en
+# keresztul (NEM a teljes bf16 + transformers ut) — a felhasznalo
+# kifejezett kerese, mert a bf16 letoltese ~56 GB, a GGUF (Q4_K_M,
+# unsloth kiadasa) ~16.8 GB. A GGUF format eretebb/megbizhatobb, mint a
+# szort minosegu, nem hivatalos AWQ requant-ok (a Qwen sajat HF-forumjan
+# is panaszkodtak ezekre) — unsloth es bartowski a kozossegben
+# koztiszteletben allo, sajat KL-divergencia-benchmarkkal osszemert
+# GGUF-kiadok.
+#
+# ARCHITEKTURA-VALTAS: a modell mostantol NEM a backend Python-
+# folyamataban, in-process fut, hanem KULON folyamatkent, a
+# llama-server-en keresztul (sajat supervisor-program, lasd 8. lepes),
+# OpenAI-kompatibilis HTTP API-val. Ez a fuggveny csak egy HTTP-hivast
+# csinal, nem tolt be semmit sajat magaban — a "get_stylizer_model()"
+# fuggveny es a hozza tartozo transformers/BitsAndBytesConfig import
+# EZERT TUNT EL innen.
+#
+# A GONDOLKODAS es a JSON_KEZDET/JSON_VEGE kinyeres-logika VALTOZATLAN —
+# a llama-server valasza is <think>...</think> blokkot tartalmazhat a
+# vegso valasz elott (--reasoning on kapcsolo), amit ugyanugy levagunk.
 # ============================================================
 
-class TranslateRequest(BaseModel):
-    text: str
-    source_lang: str = "eng_Latn"  # FLORES-200 nyelvkod
-    target_lang: str = "hun_Latn"
-    stylize: bool = True
+QWEN_LLAMA_SERVER_URL = os.environ.get("QWEN_LLAMA_SERVER_URL", "http://127.0.0.1:8002")
 
-
-class TranslateResponse(BaseModel):
-    raw_translation: str
-    stylized_translation: str
-
-
-@functools.lru_cache
-def get_nllb():
-    import torch
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-1.3B", cache_dir=TRANSLATION_MODEL_DIR)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        "facebook/nllb-200-1.3B", cache_dir=TRANSLATION_MODEL_DIR, torch_dtype=torch.float16
-    ).to("cuda")
-    return tokenizer, model
-
-
-@functools.lru_cache
-def get_stylizer_model():
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B-Instruct-2507", cache_dir=TRANSLATION_MODEL_DIR)
-    model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen3-4B-Instruct-2507",
-        cache_dir=TRANSLATION_MODEL_DIR,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda",
-    )
-    return tokenizer, model
-
-
-def nllb_translate(text: str, source_lang: str, target_lang: str) -> str:
-    import torch
-
-    tokenizer, model = get_nllb()
-    tokenizer.src_lang = source_lang
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    target_id = tokenizer.convert_tokens_to_ids(target_lang)
-    with torch.no_grad():
-        generated = model.generate(**inputs, forced_bos_token_id=target_id, max_new_tokens=512)
-    return tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
-
-
-def stylize_translation(raw_text: str, original_text: str) -> str:
-    import torch
-
-    tokenizer, model = get_stylizer_model()
-    # A korabban hasznalt Racka-4B (magyar-hangolt, de dual-mode Qwen3-4B
-    # alapu) elesben megbizhatatlannak bizonyult: idonkent visszaidezte a
-    # sajat rendszer-promptjat, duplikalta a valaszt, vagy beleirta a
-    # sablon-cimkeket a kimenetbe. A Qwen3-4B-Instruct-2507 ennek pont az
-    # ellentetje: DEDIKALT, csak non-thinking modu valtozat (nincs is
-    # <think> blokk generalasi kepessege architekturalisan), amit
-    # kifejezetten az instrukciokovetes es a tobbnyelvu illeszkedes
-    # javitasara frissitettek (2025 julius). A "VEGSO:" jelolo + a
-    # kinyeres-alapu feldolgozas ennek ellenere megmarad tovabbi
-    # biztonsagi halonak — barmely modellnel hasznos, nem csak a regi
-    # Rackanal.
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Te egy profi magyar szinkron- es feliratforditó vagy. A feladatod, hogy egy "
-                "nyers, gépi fordítást természetes, folyékony, köznyelvi magyarra igazíts, "
-                "az eredeti jelentés megtartása mellett."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Eredeti szöveg: {original_text}\n"
-                f"Nyers fordítás: {raw_text}\n\n"
-                "Valaszolj PONTOSAN ebben a formatumban, semmi mast ne irj:\n"
-                "VEGSO: <a javított magyar mondat, egyetlen sorban>"
-            ),
-        },
-    ]
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        generated = model.generate(
-            **inputs,
-            max_new_tokens=512,
-            do_sample=False,
-            # repetition_penalty + no_repeat_ngram_size: tovabbi vedelem
-            # barmilyen degeneralt ismetles ellen (pl. korabban megfigyelt
-            # "Tess. Tess." tipusu duplikacio) — barmely modellnel hasznos
-            # biztonsagi halo, nem csak a regi Rackanal jelentkezo hibara
-            # valo reakciokent.
-            repetition_penalty=1.3,
-            no_repeat_ngram_size=3,
-        )
-    output_ids = generated[0][inputs["input_ids"].shape[1]:]
-    output = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-
-    # Vedekezo tisztitas: a Qwen3-4B-Instruct-2507 architekturalisan nem
-    # general <think> blokkot, de ha valamiert megis maradna (pl. jovobeli
-    # modellcsere), vagjuk le, mielott a jelolot keresnenk.
-    output = re.sub(r"<think>.*?</think>", "", output, flags=re.DOTALL).strip()
-
-    # A "VEGSO:" jelolo utani, ELSO sor a tenyleges valasz — fuggetlenul
-    # attol, mi elozi meg (ismetles, visszaidezett prompt-reszlet, stb.).
-    match = re.search(r"VEGSO:\s*(.+)", output, flags=re.IGNORECASE)
-    if match:
-        output = match.group(1).strip().split("\n")[0].strip()
-    else:
-        output = ""
-
-    # Ha a jelolo nem talalhato, LEZARATLAN "<think>" maradt, vagy a
-    # kinyert valasz ures — inkabb a nyers NLLB-forditast adjuk vissza,
-    # mint hasznalhatatlan/megbizhatatlan szoveget.
-    if not output or "<think>" in output:
-        return raw_text
-
-    return output
-
-
-@custom_ai_router.post("/translate", response_model=TranslateResponse)
-def translate(req: TranslateRequest):
-    try:
-        raw = nllb_translate(req.text, req.source_lang, req.target_lang)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"NLLB fordítási hiba: {exc}")
-
-    if not req.stylize:
-        return TranslateResponse(raw_translation=raw, stylized_translation=raw)
-
-    try:
-        stylized = stylize_translation(raw, req.text)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Qwen3 stilizálási hiba: {exc}")
-
-    return TranslateResponse(raw_translation=raw, stylized_translation=stylized)
-
-
-# ============================================================
-# Kotegelt, KONTEXTUS-TUDATOS forditas: a TELJES parbeszedet egyben
-# kapja a Qwen3-4B-Instruct-2507 (NLLB nelkul, kozvetlenul), igy latja
-# az osszefuggeseket es konzisztens stilust/hangnemet tud tartani
-# beszelonkent — nem csak izolalt, egymastol fuggetlen mondatokat forgat.
-# ============================================================
 
 class BatchSegmentIn(BaseModel):
     id: int
@@ -413,9 +282,7 @@ class BatchTranslateResponse(BaseModel):
 
 
 def translate_batch_with_context(segments: list) -> list:
-    import torch
-
-    tokenizer, model = get_stylizer_model()
+    import requests
 
     lines = []
     for seg in segments:
@@ -449,23 +316,34 @@ def translate_batch_with_context(segments: list) -> list:
             ),
         },
     ]
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-    # A kimenet meretenek dinamikus skalazasa a szegmensszammal — egy
-    # nagyobb parbeszednek tobb token kell, hogy ne vagja le a valaszt.
-    max_tokens = max(1024, len(segments) * 80)
+    # A kimenet meretenek dinamikus skalazasa a szegmensszammal — a
+    # bekapcsolt gondolkodas miatt jelentosen nagyobb alap-keret kell,
+    # mint egy non-thinking valasznal (a <think> blokk maga is sok
+    # tokent hasznalhat, mielott a tenyleges JSON-valasz elkezdodne).
+    max_tokens = max(4096, 3000 + len(segments) * 150)
 
-    with torch.no_grad():
-        generated = model.generate(
-            **inputs,
-            max_new_tokens=max_tokens,
-            do_sample=False,
-            repetition_penalty=1.3,
-            no_repeat_ngram_size=3,
+    try:
+        resp = requests.post(
+            f"{QWEN_LLAMA_SERVER_URL}/v1/chat/completions",
+            json={
+                "model": "qwen3.6-27b",
+                "messages": messages,
+                "max_tokens": max_tokens,
+                # A Qwen sajat ajanlasa "thinking mode altalanos feladatokhoz":
+                # temperature=1.0, top_p=0.95, presence_penalty=0.0. A
+                # llama-server --reasoning on kapcsoloval gondolkodik.
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "presence_penalty": 0.0,
+            },
+            timeout=900,
         )
-    output_ids = generated[0][inputs["input_ids"].shape[1]:]
-    output = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"A qwen-translate (llama-server) hivas sikertelen: {exc}") from exc
+
+    output = resp.json()["choices"][0]["message"]["content"].strip()
     output = re.sub(r"<think>.*?</think>", "", output, flags=re.DOTALL).strip()
 
     match = re.search(r"JSON_KEZDET\s*(.+?)\s*JSON_VEGE", output, flags=re.DOTALL)
@@ -484,7 +362,12 @@ def translate_batch_with_context(segments: list) -> list:
     # ezt levagjuk, mielott parse-olnank.
     candidate = re.sub(r",\s*([\]}])", r"\1", candidate)
 
-    parsed = json.loads(candidate)
+    # strict=False: a modell idonkent nyers (nem escape-elt) vezerlo-
+    # karaktert (pl. sortorest) tesz egy string-ertek belsejebe — a Python
+    # json modulja alapertelmezetten (strict=True) ezt elutasitja
+    # ("Invalid control character"), pedig tartalmilag ertelmezheto.
+    # strict=False mellett ezeket megengedi.
+    parsed = json.loads(candidate, strict=False)
     by_id = {item["id"]: item.get("text_hu", "") for item in parsed if "id" in item}
 
     result = []
@@ -807,84 +690,105 @@ echo "  whisperx-backend regisztrálva és elindítva a supervisor alatt (port 8
 echo "  napló: /var/log/portal/whisperx-backend.log"
 
 ###############################################################################
-# 8. Fordítási modellek előtöltése (NLLB-200 1.3B nyers fordítás +
-#    Qwen3-4B-Instruct-2507 magyar stilizálás)
+# 8. Fordítási modell: Qwen3.6-27B GGUF, llama.cpp/llama-server-en
+#    keresztül (NEM a teljes bf16 + transformers/AutoProcessor út)
 #
-# Ez a szakasz NEM része a WhisperX-WebUI repónak — külön, a jövőbeli saját
-# fordítási szolgáltatáshoz készíti elő a modelleket, ugyanazzal az elvvel,
-# mint a Whisper/UVR/diarizáció: előtöltjük, hogy első hívásnál ne kelljen
-# letölteni.
+# TÖRTÉNET (2026-08): eredetileg NLLB-200+Racka-4B, majd NLLB+Qwen3-4B-
+# Instruct-2507, majd Qwen3-14B, majd Qwen/Qwen3.6-27B teljes bf16 +
+# transformers (~56 GB letöltés). A felhasználó kifejezetten elutasította
+# az 56 GB-os letöltést ("Isten ments"), és GGUF-ra kérte a váltást — ez
+# egyben ARCHITEKTÚRA-VÁLTÁS is: a modell mostantól NEM a whisperx-
+# backend Python-folyamatában fut in-process, hanem egy KÜLÖN
+# llama-server folyamatként, OpenAI-kompatibilis HTTP API-val (saját
+# supervisor-program, port 8002). A router.py translate_batch_with_
+# context()-je csak HTTP-hívást csinál ehhez.
 #
-# VÁLTÁS (2026-08): korábban itt az elte-nlp/Racka-4B (magyar-hangolt
-# Qwen3-4B) futott, de éles tesztelés során megbízhatatlannak bizonyult —
-# visszaidézte a saját rendszer-promptját, duplikálta a válaszokat,
-# beleírta a sablon-címkéket a kimenetbe. Ezek ÁLTALÁNOS instrukció-
-# követési gyengeségek voltak, nem kifejezetten magyar-nyelvi problémák,
-# ezért a felhasználó javaslatára áttértünk a Qwen/Qwen3-4B-Instruct-2507-re:
-# ez a Qwen3-4B DEDIKÁLT, CSAK non-thinking módú, 2025 júliusi frissítése —
-# architekturálisan képtelen <think> blokkot generálni (nem csak egy
-# kikapcsolható flag védi ez ellen), és kifejezetten az instrukció-
-# követés, a többnyelvű illeszkedés és a felhasználói preferenciákhoz
-# igazodás javítására hangolták. Ugyanaz a 4B méret, ugyanannyi VRAM —
-# közvetlen csere. Amit elveszítünk: a Racka kifejezetten magyarra
-# hangolt benchmark-előnyét (HuLU/OpenHuEval) — ezt a Qwen3 család
-# általános, hivatalosan is erősnek hirdetett többnyelvű instrukció-
-# követése/fordítási képessége ellensúlyozza, bár nem magyar-specifikusan
-# optimalizált.
+# MIÉRT GGUF ÉS NEM AWQ: kerestünk kb. 16 GB-os, előre kvantált Qwen3.6-
+# 27B verziókat is (AWQ/INT4) — de ezek MIND harmadik felesek, és a Qwen
+# saját HF-fórumán is panaszkodtak rájuk ("not stable to use"). A GGUF
+# (unsloth/Qwen3.6-27B-GGUF, Q4_K_M, ~16.8 GB) sokkal érettebb,
+# köztiszteletben álló formátum — az unsloth és bartowski kiadásait
+# külön KL-divergencia-benchmarkkal is összemérték más kiadókkal.
 #
-# Miért snapshot_download, nem model-instantiate (mint a faster-whisper/
-# pyannote-nál): a transformers-modelleknél a snapshot_download csak a
-# fájlokat tölti le, nem tölti be a modellt memoriaba/GPU-ra — gyorsabb és
-# nem terheli feleslegesen a provisioning-folyamatot. Futásidőben a
-# tényleges fordítási szolgáltatás majd ugyanebből a cache_dir-ből
-# tölt be, újralétöltés nélkül.
+# ISMERT HIBA (dokumentált): unsloth saját dokumentációja szerint CUDA
+# 13.2-vel a Qwen3.6 GGUF értelmetlen ("gibberish") kimenetet adhat. A mi
+# képünk CUDA 12.6.3-at használ — ez rendben van, de HA valaha a képet
+# frissítenénk, ezt ELLENŐRIZNI KELL újra.
 #
-# Diszkigény: kb. +10-15 GB (NLLB-200-1.3B ~5 GB, Qwen3-4B-Instruct-2507
-# ~8 GB fp16-ban) — ha szűkös a hely, ellenőrizd a "df -h /" kimenetet a
-# lépés után.
+# A modellt magát a llama-server "-hf" kapcsolója tölti le AUTOMATIKUSAN,
+# első induláskor, közvetlenül a HuggingFace-ről — nincs külön
+# snapshot_download lépés.
 #
 # FONTOS: ez a lepes SZANDEKOSAN nem szakitja meg a szkriptet hiba eseten
-# (set +e / set -e keretezve). A 7. lepesben a backend mar elindult es
-# regisztralva van a supervisornal — ha ez a "nice to have" elotoltes
-# halozati vagy diszk-hibaval elhasal, az NE jelentse a teljes
-# provisioning bukasat es NE inditson ujra egy teljes, a mar futo
-# szolgaltatast megzavaro kort. A hiba csak logolva lesz.
+# (set +e / set -e keretezve), es a llama-server ONMAGABAN, KULON
+# supervisor-programkent fut — ha az epites/inditas elhasal, a
+# whisperx-backend (7. lepes) attol meg mukodik tovabb.
 ###############################################################################
-echo "--- 8. Fordítási modellek előtöltése (NLLB-200 1.3B, Qwen3-4B-Instruct-2507) ---"
+echo "--- 8. llama.cpp építése + Qwen3.6-27B GGUF (Q4_K_M, ~16.8 GB) ---"
 
 set +e
 
-python -m pip install -q sentencepiece accelerate bitsandbytes
+apt-get install -y --no-install-recommends cmake build-essential libcurl4-openssl-dev
 if [ $? -ne 0 ]; then
-    echo "  FIGYELEM: a forditasi fuggosegek telepitese nem sikerult, a lepes kihagyva." >&2
+    echo "  FIGYELEM: a llama.cpp build-fuggosegek telepitese nem sikerult." >&2
 fi
 
-TRANSLATION_MODEL_DIR="${WORKSPACE_DIR}/models/Translation"
-mkdir -p "$TRANSLATION_MODEL_DIR"
-
-python - <<PYEOF
-from huggingface_hub import snapshot_download
-
-print("  facebook/nllb-200-1.3B letoltese...")
-snapshot_download(
-    repo_id="facebook/nllb-200-1.3B",
-    cache_dir="${TRANSLATION_MODEL_DIR}",
-)
-
-print("  Qwen/Qwen3-4B-Instruct-2507 letoltese...")
-snapshot_download(
-    repo_id="Qwen/Qwen3-4B-Instruct-2507",
-    cache_dir="${TRANSLATION_MODEL_DIR}",
-)
-PYEOF
-if [ $? -ne 0 ]; then
-    echo "  FIGYELEM: a forditasi modellek elotoltese nem sikerult teljesen — a backend ettol meg fut, ez csak a jovobeli forditasi funkciot erinti. Probald ujra kezzel kesobb." >&2
+LLAMA_CPP_DIR="${WORKSPACE_DIR}/llama.cpp"
+if [ -d "${LLAMA_CPP_DIR}/.git" ]; then
+    echo "  llama.cpp mar letezik, frissites..."
+    git -C "$LLAMA_CPP_DIR" pull
+else
+    git clone https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_DIR"
 fi
 
-set -e
+if [ -d "$LLAMA_CPP_DIR" ]; then
+    cmake -B "${LLAMA_CPP_DIR}/build" -S "$LLAMA_CPP_DIR" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+    cmake --build "${LLAMA_CPP_DIR}/build" --config Release -j"$(nproc)" --target llama-server
+    if [ $? -ne 0 ]; then
+        echo "  FIGYELEM: a llama.cpp (llama-server) epitese nem sikerult — a forditasi funkcio nem lesz elerheto, de a tobbi szolgaltatas fut tovabb." >&2
+    fi
+else
+    echo "  FIGYELEM: a llama.cpp klonozasa nem sikerult." >&2
+fi
 
-echo "  Fordítási modellek helye: ${TRANSLATION_MODEL_DIR}"
-df -h / | tail -1
+LLAMA_SERVER_BIN="${LLAMA_CPP_DIR}/build/bin/llama-server"
+LLAMA_GGUF_CACHE="${WORKSPACE_DIR}/models/llama-gguf-cache"
+mkdir -p "$LLAMA_GGUF_CACHE"
+
+if [ -x "$LLAMA_SERVER_BIN" ]; then
+    cat > /opt/supervisor-scripts/qwen-translate.sh <<EOF
+#!/bin/bash
+export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
+exec ${LLAMA_SERVER_BIN} \\
+    -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
+    --host 0.0.0.0 --port 8002 \\
+    -ngl 999 -c 65536 -fa on \\
+    --jinja \\
+    --reasoning on \\
+    --chat-template-kwargs '{"preserve_thinking": true}'
+EOF
+    chmod +x /opt/supervisor-scripts/qwen-translate.sh
+
+    cat > /etc/supervisor/conf.d/qwen-translate.conf <<'EOF'
+[program:qwen-translate]
+command=/opt/supervisor-scripts/qwen-translate.sh
+autostart=true
+autorestart=true
+startretries=3
+stdout_logfile=/var/log/portal/qwen-translate.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile=/var/log/portal/qwen-translate.log
+stderr_logfile_maxbytes=10MB
+EOF
+
+    supervisorctl reread
+    supervisorctl update
+    echo "  qwen-translate (llama-server) regisztrálva a supervisor alatt (port 8002)"
+    echo "  napló: /var/log/portal/qwen-translate.log"
+    echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) csak MOST, a szolgáltatás első indulásakor töltődik le — nézd a fenti naplót a letöltés állapotáért."
+else
+    echo "  FIGYELEM: nem talalhato a lefordított llama-server binaris ($LLAMA_SERVER_BIN) — a qwen-translate szolgaltatas nem lett regisztralva." >&2
+fi
 
 ###############################################################################
 # 9. F5-TTS (SWivid/F5-TTS, ComfyUI NELKUL, sima pip csomag + CLI/Python API)
