@@ -235,6 +235,70 @@ custom_ai_router = APIRouter(prefix="/custom-ai", tags=["Custom AI (Translate + 
 
 
 # ============================================================
+# Hang/hatterzene szetvalasztas: BS-Roformer (audio-separator csomag),
+# NEM a WhisperX-WebUI beepitett /bgm-separation/-je. Az utobbi csak
+# UVR-MDX-NET-Inst_HQ_4/Inst_3 kozott valaszthat (ellenorizve elesben
+# a MusicSeparator.available_models-szal) — ezek mar nem SOTA, a
+# szetvalasztasnal szovegreszek vesztek el/keveredtek. A BS-Roformer
+# (2023, Lu/Wang/Kong/Hung) 2026-ban is a legjobb architektura ehhez —
+# az audio-separator (nomadkaraoke) csomag sajat karbantartoja a
+# "model_bs_roformer_ep_317_sdr_12.9755.ckpt"-t ajanlja alapertelmezes-
+# kent ("go-to a tiszta, teljes spektrumu szetvalasztashoz a legtobb
+# bemenethez") — ezt hasznaljuk, nem a csomag sajat (Mel-Band) default-
+# jat, mert ez egy nevesitett, indokolt ajanlas.
+#
+# A modellt az audio_separator maga tolti le automatikusan, elso
+# hasznalatkor — nincs kulon snapshot_download lepes.
+# ============================================================
+
+@functools.lru_cache
+def get_separator():
+    from audio_separator.separator import Separator
+
+    sep = Separator(output_dir=tempfile.gettempdir())
+    sep.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+    return sep
+
+
+@custom_ai_router.post("/separate")
+async def separate(audio: UploadFile = File(...)):
+    import zipfile
+
+    try:
+        separator = get_separator()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"BS-Roformer betoltesi hiba: {exc}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, audio.filename or "input.wav")
+        with open(input_path, "wb") as f:
+            f.write(await audio.read())
+
+        try:
+            output_files = separator.separate(input_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"BS-Roformer szetvalasztasi hiba: {exc}")
+
+        if not output_files:
+            raise HTTPException(status_code=500, detail="A szetvalasztas nem adott vissza kimeneti fajlt.")
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            for path in output_files:
+                # A separator.output_dir-ba irja a kimenetet (nem feltetlenul
+                # a tmpdir-be) — abszolut/relativ utat is adhat vissza.
+                full_path = path if os.path.isabs(path) else os.path.join(tempfile.gettempdir(), path)
+                zf.write(full_path, arcname=os.path.basename(full_path))
+        zip_buffer.seek(0)
+
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=separated.zip"},
+        )
+
+
+# ============================================================
 # Forditas: Qwen3.6-27B, DE MOST GGUF-kent, llama.cpp/llama-server-en
 # keresztul (NEM a teljes bf16 + transformers ut) — a felhasznalo
 # kifejezett kerese, mert a bf16 letoltese ~56 GB, a GGUF (Q4_K_M,
@@ -318,10 +382,18 @@ def translate_batch_with_context(segments: list) -> list:
     ]
 
     # A kimenet meretenek dinamikus skalazasa a szegmensszammal — a
-    # bekapcsolt gondolkodas miatt jelentosen nagyobb alap-keret kell,
-    # mint egy non-thinking valasznal (a <think> blokk maga is sok
-    # tokent hasznalhat, mielott a tenyleges JSON-valasz elkezdodne).
-    max_tokens = max(4096, 3000 + len(segments) * 150)
+    # bekapcsolt gondolkodas miatt JELENTOSEN nagyobb keret kell, mint egy
+    # non-thinking valasznal. VALOS HIBA ALAPJAN EMELVE (2026-08): a korabbi
+    # max(4096, 3000+szegmensszam*150) kepletnel (14 szegmensre: 5100 token)
+    # a modell a <think> blokkban elfogyasztotta a teljes keretet, mielott
+    # eljutott volna a tenyleges JSON-valaszig — a hivas sikeresen lefutott,
+    # de "A modell valasza nem tartalmazott ertelmezheto JSON-t" hibaval
+    # vegzodott. A Qwen3.6 sajat dokumentacioja "Adequate Output Length"
+    # cimen 32768 tokent ajanl a legtobb (gondolkodo modu) kereshez. A
+    # -c 32768 a TELJES (bemenet+kimenet) kontextusablak, ezert nem
+    # kerhetunk pontosan ennyit kimenetre — max_tokens felso hatarat
+    # 24576-ra korlatozzuk, hogy mindig maradjon hely a bemeneti promptnak.
+    max_tokens = min(24576, max(12288, 2000 + len(segments) * 400))
 
     try:
         resp = requests.post(
@@ -355,7 +427,15 @@ def translate_batch_with_context(segments: list) -> list:
         start = output.find("[")
         end = output.rfind("]")
         if start == -1 or end == -1 or end <= start:
-            raise ValueError("A modell valasza nem tartalmazott ertelmezheto JSON-t.")
+            # Diagnosztikai celbol beleirjuk a hibauzenetbe a nyers valasz
+            # elejet/veget is — igy legkozelebb NEM kell talalgatni, mit
+            # valaszolt tenylegesen a modell (pl. lezaratlan <think>,
+            # meg tobb tokent igenylo valasz, vagy teljesen mas hiba).
+            preview = output[:400] if output else "(ures valasz)"
+            raise ValueError(
+                f"A modell valasza nem tartalmazott ertelmezheto JSON-t. "
+                f"max_tokens={max_tokens}, valasz eleje: {preview!r}"
+            )
         candidate = output[start : end + 1]
 
     # Gyakori LLM-JSON hiba: felesleges vesszo a listak/objektumok vegen —
@@ -762,7 +842,7 @@ export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
 # FONTOS: -c 65536 (a kezdeti ertek) CUDA out-of-memory-t okozott a 24 GB-os
 # 3090-en — a 65536 tokenes kontextushoz tartozo KV-cache a Q4_K_M sulyok
 # (~16.8 GB) MELLETT mar nem fert bele. A mi feladatunkhoz (kotegelt
-# forditas, max_tokens = max(4096, 3000+szegmensszam*150)) 32768 bovel
+# forditas, max_tokens felso hatara 24576, ld. router.py) 32768 bovel
 # eleg, es jelentosen kisebb KV-cache-et igenyel.
 #
 # --sleep-idle-seconds 60 (2026-08, valos hiba alapjan hozzaadva): eles
@@ -779,7 +859,7 @@ exec ${LLAMA_SERVER_BIN} \\
     -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
     --host 0.0.0.0 --port 8002 \\
     -ngl 999 -c 32768 -fa on \\
-    --sleep-idle-seconds 6 \\
+    --sleep-idle-seconds 60 \\
     --jinja \\
     --reasoning on \\
     --chat-template-kwargs '{"preserve_thinking": true}'
@@ -868,4 +948,45 @@ echo "  F5-TTS magyar checkpoint helye: ${F5TTS_HU_DIR}"
 echo "  EMLEKEZTETO: ez a checkpoint CC-BY-NC-4.0 — csak nem-kereskedelmi hasznalatra!"
 df -h / | tail -1
 
-echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000 — /transcription, /bgm-separation, /vad, /task, /custom-ai/translate, /custom-ai/tts). ==="
+###############################################################################
+# 10. audio-separator (nomadkaraoke) — BS-Roformer, a /custom-ai/separate
+#     vegponthoz. Ez VALTJA FEL a WhisperX-WebUI beepitett /bgm-separation/
+#     lepeset a run_pipeline.php-ban — annak sajat modell-listaja fixen
+#     ['UVR-MDX-NET-Inst_HQ_4', 'UVR-MDX-NET-Inst_3']-ra korlatozodik
+#     (ellenorizve elesben a MusicSeparator.available_models-szal), roformer
+#     nincs benne, pedig 2026-ban a BS-Roformer a legjobb architektura ehhez
+#     — a jelenlegi MDX-Net-es szetvalasztasnal szovegreszek vesztek el.
+#
+# A "model_bs_roformer_ep_317_sdr_12.9755.ckpt"-t hasznaljuk (nem a csomag
+# sajat, Mel-Band-alapu default-jat) — ezt a csomag sajat karbantartoja
+# ajanlja alapertelmezeskent tiszta, teljes spektrumu szetvalasztashoz a
+# legtobb bemenethez (nomadkaraoke/python-audio-separator #133 discussion).
+###############################################################################
+echo "--- 10. audio-separator (BS-Roformer) telepítése és előtöltése ---"
+
+set +e
+
+python -m pip install -q "audio-separator[gpu]"
+if [ $? -ne 0 ]; then
+    echo "  FIGYELEM: az audio-separator[gpu] telepitese nem sikerult, a lepes kihagyva — a /custom-ai/separate vegpont nem lesz elerheto." >&2
+fi
+
+# Egyszeri elotoltes, hogy a modell mar most letoltodjon (ne az elso
+# tenyleges hivas varjon ra) — a Separator sajat maga kezeli a HF-
+# letoltest, nincs kulon snapshot_download hivas.
+python - <<'PYEOF'
+try:
+    from audio_separator.separator import Separator
+    print("  model_bs_roformer_ep_317_sdr_12.9755.ckpt eloltoltese...")
+    sep = Separator()
+    sep.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+    print("  BS-Roformer sikeresen eloltoltve.")
+except Exception as exc:
+    print(f"  FIGYELEM: BS-Roformer elotoltese nem sikerult: {exc}")
+PYEOF
+
+set -e
+
+df -h / | tail -1
+
+echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000 — /transcription, /vad, /task, /custom-ai/separate, /custom-ai/translate_batch, /custom-ai/tts; qwen-translate, port 8002). ==="
