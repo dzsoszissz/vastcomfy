@@ -390,10 +390,22 @@ echo "  napló: /var/log/portal/whisperx-backend.log"
 #
 # Diszkigény: kb. +10-15 GB (NLLB-200-1.3B ~5 GB, Racka-4B ~8 GB fp16-ban)
 # — ha szűkös a hely, ellenőrizd a "df -h /" kimenetet a lépés után.
+#
+# FONTOS: ez a lepes SZANDEKOSAN nem szakitja meg a szkriptet hiba eseten
+# (set +e / set -e keretezve). A 7. lepesben a backend mar elindult es
+# regisztralva van a supervisornal — ha ez a "nice to have" elotoltes
+# halozati vagy diszk-hibaval elhasal, az NE jelentse a teljes
+# provisioning bukasat es NE inditson ujra egy teljes, a mar futo
+# szolgaltatast megzavaro kort. A hiba csak logolva lesz.
 ###############################################################################
 echo "--- 8. Fordítási modellek előtöltése (NLLB-200 1.3B, Racka-4B) ---"
 
+set +e
+
 python -m pip install -q sentencepiece accelerate bitsandbytes
+if [ $? -ne 0 ]; then
+    echo "  FIGYELEM: a forditasi fuggosegek telepitese nem sikerult, a lepes kihagyva." >&2
+fi
 
 TRANSLATION_MODEL_DIR="${WORKSPACE_DIR}/models/Translation"
 mkdir -p "$TRANSLATION_MODEL_DIR"
@@ -413,6 +425,11 @@ snapshot_download(
     cache_dir="${TRANSLATION_MODEL_DIR}",
 )
 PYEOF
+if [ $? -ne 0 ]; then
+    echo "  FIGYELEM: a forditasi modellek elotoltese nem sikerult teljesen — a backend ettol meg fut, ez csak a jovobeli forditasi funkciot erinti. Probald ujra kezzel kesobb." >&2
+fi
+
+set -e
 
 echo "  Fordítási modellek helye: ${TRANSLATION_MODEL_DIR}"
 df -h / | tail -1
