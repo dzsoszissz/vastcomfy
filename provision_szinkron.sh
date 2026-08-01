@@ -78,7 +78,7 @@ echo "===== INSTALLED VERSIONS ====="
 python -m pip freeze | grep -Ei 'torch|torchaudio|huggingface|pyannote|transformers|tokenizers|faster-whisper|ctranslate2'
 echo "=============================="
 
-python -m pip install --force-reinstall "huggingface_hub==0.10.1"
+
 
 echo "Gyári torch/CUDA build ellenőrzése (nem szabadott módosulnia):"
 python - <<'PYEOF'
@@ -104,6 +104,37 @@ mkdir -p "$BACKEND_CACHE_DIR"
 #    pyannote Pipeline.from_pretrained, MusicSeparator.update_model) —
 #    így később, első API-híváskor nem indul újabb letöltés.
 ###############################################################################
+echo "--- WhisperX HuggingFace API patch ---"
+
+python - <<'PY'
+from pathlib import Path
+import whisperx
+
+root = Path(whisperx.__file__).parent
+
+patched = []
+
+for rel in ("vads/pyannote.py", "asr.py"):
+    p = root / rel
+    if not p.exists():
+        continue
+
+    txt = p.read_text(encoding="utf-8")
+
+    new = txt.replace("use_auth_token=", "token=")
+    new = new.replace("use_auth_token =", "token =")
+    new = new.replace("use_auth_token=None", "token=None")
+    new = new.replace("use_auth_token = None", "token = None")
+
+    if new != txt:
+        p.write_text(new, encoding="utf-8")
+        patched.append(str(p))
+
+print("Patched:")
+for f in patched:
+    print("  ", f)
+PY
+
 echo "--- 5. Modellek előtöltése ---"
 
 echo "  faster-whisper large-v2 és large-v3..."
