@@ -859,7 +859,7 @@ exec ${LLAMA_SERVER_BIN} \\
     -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
     --host 0.0.0.0 --port 8002 \\
     -ngl 999 -c 32768 -fa on \\
-    --sleep-idle-seconds 60 \\
+    --sleep-idle-seconds 6 \\
     --jinja \\
     --reasoning on \\
     --chat-template-kwargs '{"preserve_thinking": true}'
