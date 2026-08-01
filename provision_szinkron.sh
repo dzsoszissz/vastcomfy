@@ -14,7 +14,10 @@
 #     Ezért a repót magát klónozzuk a /workspace alá: így a hardkódolt
 #     útvonalak automatikusan perzisztensek lesznek, nincs szükség
 #     MODEL_DIR/INPUT_DIR/OUTPUT_DIR env-re vagy szimlinkre.
-#   - a szolgáltatást a Start Command indítja, ez a szkript nem indít semmit
+#   - a szolgáltatást ez a szkript regisztrálja és indítja el a Vast.ai
+#     saját supervisor-jánál (7. lépés) — Jupyter/SSH launch módban a
+#     docker image ENTRYPOINT-ja nem fut le, ezért nem elég egy sima
+#     háttérfolyamat, a supervisorral kell integrálni az auto-restarthoz
 ###############################################################################
 
 set -euo pipefail
@@ -291,4 +294,48 @@ print("  whisper.compute_type = float16")
 print("  bgm_separation.device = cuda")
 PYEOF
 
-echo "=== Provisioning kész. A szolgáltatást a Vast.ai Start Command indítja. ==="
+###############################################################################
+# 7. Backend szolgáltatás regisztrálása a Vast.ai supervisor-jánál
+#
+# FONTOS: Jupyter/SSH launch módban (amit ehhez a template-hez használunk)
+# a Vast.ai a saját supervisor-jával (supervisord) menedzseli a konténerben
+# futó szolgáltatásokat — a docker image saját ENTRYPOINT-ja NEM fut le
+# ilyenkor (lásd Vast.ai "Advanced Setup" dokumentáció). Ha a backendet itt
+# csak simán háttérbe indítanánk (pl. "uvicorn ... &"), a PROVISIONING_SCRIPT
+# lefutása után az a folyamat elveszne / nem lenne auto-restart, ha
+# összeomlana.
+#
+# A hivatalos minta szerint egy supervisor-program-ot kell regisztrálni:
+# egy wrapper script /opt/supervisor-scripts/ alá, egy .conf fájl
+# /etc/supervisor/conf.d/ alá, majd "supervisorctl reload".
+###############################################################################
+echo "--- 7. Backend regisztrálása a supervisor-nál ---"
+
+mkdir -p /opt/supervisor-scripts
+
+cat > /opt/supervisor-scripts/whisperx-backend.sh <<EOF
+#!/bin/bash
+source /venv/main/bin/activate
+cd "${REPO_DIR}"
+exec uvicorn backend.main:app --host 0.0.0.0 --port 8000
+EOF
+chmod +x /opt/supervisor-scripts/whisperx-backend.sh
+
+cat > /etc/supervisor/conf.d/whisperx-backend.conf <<'EOF'
+[program:whisperx-backend]
+command=/opt/supervisor-scripts/whisperx-backend.sh
+autostart=true
+autorestart=true
+startretries=3
+stdout_logfile=/var/log/portal/whisperx-backend.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile=/var/log/portal/whisperx-backend.log
+stderr_logfile_maxbytes=10MB
+EOF
+
+supervisorctl reread
+supervisorctl update
+echo "  whisperx-backend regisztrálva és elindítva a supervisor alatt (port 8000)"
+echo "  napló: /var/log/portal/whisperx-backend.log"
+
+echo "=== Provisioning kész. A backend a Vast.ai supervisor alatt fut (whisperx-backend, port 8000). ==="
