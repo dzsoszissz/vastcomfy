@@ -1012,7 +1012,13 @@ EOF
 
     supervisorctl reread
     supervisorctl update
-    echo "  qwen-translate (llama-server) regisztrálva a supervisor alatt (port 8002)"
+    # FONTOS: az "update" az autostart=true miatt elvileg automatikusan
+    # elinditja az UJONNAN regisztralt programot — de mivel pont ez a
+    # hiba (a qwen-translate nem fut) tobbszor is gondot okozott ebben a
+    # projektben, explicit "start"-tal is biztositjuk, ugyanugy ahogy a
+    # whisperx-backend-nel is van redundans restart a reread/update utan.
+    supervisorctl start qwen-translate || true
+    echo "  qwen-translate (llama-server) regisztrálva és elindítva a supervisor alatt (port 8002)"
     echo "  napló: /var/log/portal/qwen-translate.log"
     echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) most, első induláskor töltődik le, majd a modell 6 mp inaktivitás után automatikusan kiürül a VRAM-ból (--sleep-idle-seconds)."
 else
