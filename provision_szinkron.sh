@@ -219,9 +219,11 @@ WhisperX-WebUI FastAPI-alkalmazasba.
 """
 import functools
 import io
+import json
 import os
 import re
 import tempfile
+from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -380,6 +382,133 @@ def translate(req: TranslateRequest):
         raise HTTPException(status_code=500, detail=f"Qwen3 stilizálási hiba: {exc}")
 
     return TranslateResponse(raw_translation=raw, stylized_translation=stylized)
+
+
+# ============================================================
+# Kotegelt, KONTEXTUS-TUDATOS forditas: a TELJES parbeszedet egyben
+# kapja a Qwen3-4B-Instruct-2507 (NLLB nelkul, kozvetlenul), igy latja
+# az osszefuggeseket es konzisztens stilust/hangnemet tud tartani
+# beszelonkent — nem csak izolalt, egymastol fuggetlen mondatokat forgat.
+# ============================================================
+
+class BatchSegmentIn(BaseModel):
+    id: int
+    speaker: Optional[str] = None
+    text: str
+
+
+class BatchTranslateRequest(BaseModel):
+    segments: List[BatchSegmentIn]
+
+
+class BatchSegmentOut(BaseModel):
+    id: int
+    speaker: Optional[str] = None
+    text_en: str
+    text_hu: str
+
+
+class BatchTranslateResponse(BaseModel):
+    segments: List[BatchSegmentOut]
+
+
+def translate_batch_with_context(segments: list) -> list:
+    import torch
+
+    tokenizer, model = get_stylizer_model()
+
+    lines = []
+    for seg in segments:
+        speaker = seg.get("speaker") or "?"
+        lines.append(
+            '{"id": %d, "speaker": %s, "text": %s}'
+            % (seg["id"], json.dumps(speaker, ensure_ascii=False), json.dumps(seg["text"], ensure_ascii=False))
+        )
+    segments_json = "[\n  " + ",\n  ".join(lines) + "\n]"
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Te egy profi magyar szinkron- es feliratforditó vagy. Egy teljes jelenet "
+                "angol párbeszédét kapod, időrendi sorrendben, beszélő-címkékkel. Fordítsd le "
+                "természetes, folyékony, köznyelvi magyarra, ÚGY, HOGY figyelembe veszed a "
+                "teljes beszélgetés kontextusát, és konzisztens stílust/hangnemet tartasz meg "
+                "beszélőnként az egész jeleneten át."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Párbeszéd (JSON tömb):\n{segments_json}\n\n"
+                "Válaszolj PONTOSAN ebben a formátumban, más semmit ne írj — minden bemeneti "
+                "id-hoz pontosan egy kimeneti elem tartozzon, ugyanabban a sorrendben:\n"
+                "JSON_KEZDET\n"
+                '[{"id": <id>, "text_hu": "<magyar fordítás>"}, ...]\n'
+                "JSON_VEGE"
+            ),
+        },
+    ]
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    # A kimenet meretenek dinamikus skalazasa a szegmensszammal — egy
+    # nagyobb parbeszednek tobb token kell, hogy ne vagja le a valaszt.
+    max_tokens = max(1024, len(segments) * 80)
+
+    with torch.no_grad():
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            do_sample=False,
+            repetition_penalty=1.3,
+            no_repeat_ngram_size=3,
+        )
+    output_ids = generated[0][inputs["input_ids"].shape[1]:]
+    output = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+    output = re.sub(r"<think>.*?</think>", "", output, flags=re.DOTALL).strip()
+
+    match = re.search(r"JSON_KEZDET\s*(.+?)\s*JSON_VEGE", output, flags=re.DOTALL)
+    if match:
+        candidate = match.group(1).strip()
+    else:
+        # Vedekezo fallback: a jelolok hianyaban probaljuk megkeresni az
+        # elso "[" es utolso "]" kozotti reszt.
+        start = output.find("[")
+        end = output.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("A modell valasza nem tartalmazott ertelmezheto JSON-t.")
+        candidate = output[start : end + 1]
+
+    # Gyakori LLM-JSON hiba: felesleges vesszo a listak/objektumok vegen —
+    # ezt levagjuk, mielott parse-olnank.
+    candidate = re.sub(r",\s*([\]}])", r"\1", candidate)
+
+    parsed = json.loads(candidate)
+    by_id = {item["id"]: item.get("text_hu", "") for item in parsed if "id" in item}
+
+    result = []
+    for seg in segments:
+        result.append(
+            {
+                "id": seg["id"],
+                "speaker": seg.get("speaker"),
+                "text_en": seg["text"],
+                "text_hu": by_id.get(seg["id"], ""),
+            }
+        )
+    return result
+
+
+@custom_ai_router.post("/translate_batch", response_model=BatchTranslateResponse)
+def translate_batch(req: BatchTranslateRequest):
+    try:
+        segments_in = [s.dict() for s in req.segments]
+        result = translate_batch_with_context(segments_in)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kötegelt fordítási hiba: {exc}")
+
+    return BatchTranslateResponse(segments=[BatchSegmentOut(**r) for r in result])
 
 
 # ============================================================
