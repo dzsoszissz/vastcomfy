@@ -763,13 +763,23 @@ export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
 # 3090-en — a 65536 tokenes kontextushoz tartozo KV-cache a Q4_K_M sulyok
 # (~16.8 GB) MELLETT mar nem fert bele. A mi feladatunkhoz (kotegelt
 # forditas, max_tokens = max(4096, 3000+szegmensszam*150)) 32768 bovel
-# eleg, es jelentosen kisebb KV-cache-et igenyel. Ha meg mindig OOM-ot
-# kapnal, csokkentsd tovabb (pl. 16384-re), vagy ellenorizd nvidia-smi-vel,
-# hogy a whisper/UVR/F5-TTS stack nem tart-e lefoglalva VRAM-ot induláskor.
+# eleg, es jelentosen kisebb KV-cache-et igenyel.
+#
+# --sleep-idle-seconds 60 (2026-08, valos hiba alapjan hozzaadva): eles
+# tesztunk kimutatta, hogy a llama-server allandoan, TETLENUL is majdnem
+# a teljes VRAM-ot (24115/24576 MiB) lefoglalva tartotta, ami miatt a
+# Whisper-modell betoltese "CUDA failed with error out of memory" hibaval
+# elhasalt. A llama.cpp sajat, natív megoldasa erre a --sleep-idle-seconds
+# kapcsolo (PR #18228, 2026 januar): a szerver FOLYAMAT eleiben marad,
+# de 60 mp inaktivitas utan a modellt es a KV-cache-et KIURITI a VRAM-bol
+# — a kovetkezo tenyleges keres automatikusan visszatolti. A /health
+# vegpontunk KIFEJEZETTEN nem szamit "aktivitasnak", tehat allapot-
+# ellenorzessel nem tartjuk eberen feleslegesen.
 exec ${LLAMA_SERVER_BIN} \\
     -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
     --host 0.0.0.0 --port 8002 \\
     -ngl 999 -c 32768 -fa on \\
+    --sleep-idle-seconds 6 \\
     --jinja \\
     --reasoning on \\
     --chat-template-kwargs '{"preserve_thinking": true}'
@@ -792,7 +802,7 @@ EOF
     supervisorctl update
     echo "  qwen-translate (llama-server) regisztrálva a supervisor alatt (port 8002)"
     echo "  napló: /var/log/portal/qwen-translate.log"
-    echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) csak MOST, a szolgáltatás első indulásakor töltődik le — nézd a fenti naplót a letöltés állapotáért."
+    echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) most, első induláskor töltődik le, majd a modell 60 mp inaktivitás után automatikusan kiürül a VRAM-ból (--sleep-idle-seconds)."
 else
     echo "  FIGYELEM: nem talalhato a lefordított llama-server binaris ($LLAMA_SERVER_BIN) — a qwen-translate szolgaltatas nem lett regisztralva." >&2
 fi
