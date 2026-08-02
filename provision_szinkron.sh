@@ -304,7 +304,20 @@ custom_ai_router = APIRouter(prefix="/custom-ai", tags=["Custom AI (Translate + 
 def get_separator():
     from audio_separator.separator import Separator
 
-    sep = Separator(output_dir=tempfile.gettempdir())
+    # VALOS HIBA ALAPJAN JAVITVA (2026-08): a Separator alapertelmezett
+    # model_file_dir-je "/tmp/audio-separator-models/" — ez a rendszer
+    # /tmp-je, ami barmikor kiurulhet (instance-ujrainditas, rendszer-
+    # takaritas). Ha ez megtortenik, a kovetkezo hivas ujra le kell
+    # toltse a ~600MB-os BS-Roformer sulyt a halozatrol, ami megmagyarazza
+    # a korabban eszlelt, rejtelyes tobblet-idot (a tenyleges GPU-
+    # feldolgozas ~16mp volt, de a teljes lepes ~85mp-ig tartott). Explicit
+    # allando helyre (WORKSPACE_DIR-en belul, sosem torlodik automatikusan)
+    # iranyitva, hogy ez tobbet ne fordulhasson elo.
+    separator_models_dir = os.environ.get(
+        "AUDIO_SEPARATOR_MODEL_DIR", "/workspace/models/audio-separator-models"
+    )
+    os.makedirs(separator_models_dir, exist_ok=True)
+    sep = Separator(output_dir=tempfile.gettempdir(), model_file_dir=separator_models_dir)
     sep.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
     return sep
 
@@ -642,15 +655,26 @@ async def tts(
     ref_text: str = Form(
         "",
         description=(
-            "A referencia hang pontos átirata. Ha üresen hagyod, a rendszer "
-            "automatikusan transzkribálja a ref_audio-t a Maxdorger29/"
-            "whisper-large-v3-hungarian-lora modellel (a F5-TTS-Hungarian "
-            "szerzője által kifejezetten erre a célra épített ASR) — ez "
-            "gyakran pontosabb, mint egy kézzel begépelt átirat, mert a "
-            "TÉNYLEGES hangzásból (szünetek, hangsúlyok) készül."
+            "A referencia hang pontos átirata. Ha üresen hagyod ÉS az "
+            "auto_transcribe_ref=true, a rendszer automatikusan transzkribálja "
+            "a ref_audio-t a Maxdorger29/whisper-large-v3-hungarian-lora "
+            "modellel — de ez EGY TOVÁBBI modellt tölt be VRAM-ba a Whisper és "
+            "F5-TTS MELLÉ, ezért nem automatikus, kifejezetten be kell kapcsolni."
         ),
     ),
     gen_text: str = Form(..., description="A felolvasandó/generálandó magyar szöveg"),
+    auto_transcribe_ref: bool = Form(
+        False,
+        description=(
+            "Ha true ÉS ref_text üres, automatikusan transzkribálja a "
+            "ref_audio-t a magyar ASR LoRA-val. VALÓS HIBA ALAPJAN (2026-08): "
+            "korábban ez AUTOMATIKUSAN lefutott üres ref_text eseten, es a "
+            "fo pipeline-ban VRAM-OOM-ot okozott (harmadik modell betoltese "
+            "a mar bent levo Whisper+F5-TTS melle, ugyanabban a folyamatban). "
+            "Mostantol kifejezett bekapcsolas kell — a run_pipeline.php SOHA "
+            "nem kuldi ezt true-ra, csak kezi/curl tesztekhez valo."
+        ),
+    ),
     speed: float = Form(
         0.85,
         description=(
@@ -676,6 +700,16 @@ async def tts(
     try:
         effective_ref_text = ref_text.strip()
         if not effective_ref_text:
+            if not auto_transcribe_ref:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Nincs ref_text megadva, es auto_transcribe_ref sincs "
+                        "bekapcsolva. Vagy adj meg explicit ref_text-et, vagy "
+                        "kuldd auto_transcribe_ref=true-t (VRAM-koltseges — "
+                        "kulon ASR-modellt tolt be)."
+                    ),
+                )
             try:
                 asr = get_hungarian_asr()
                 segments, _info = asr.transcribe(tmp_ref_path, language="hu")
@@ -1057,15 +1091,28 @@ EOF
 
     supervisorctl reread
     supervisorctl update
-    # FONTOS: az "update" az autostart=true miatt elvileg automatikusan
-    # elinditja az UJONNAN regisztralt programot — de mivel pont ez a
-    # hiba (a qwen-translate nem fut) tobbszor is gondot okozott ebben a
-    # projektben, explicit "start"-tal is biztositjuk, ugyanugy ahogy a
-    # whisperx-backend-nel is van redundans restart a reread/update utan.
+    # FONTOS (valos hiba alapjan, 2026-08): FORDITOTT VRAM-utkozes, amit
+    # eddig nem kezeltunk. A whisperx-backend.sh a SAJAT indulasa elott
+    # leallitja a qwen-translate-et — de forditva semmi nem vedett: egy
+    # VADONATUJ instance-on a 7. lepes MAR betoltotte a Whisper-modellt
+    # (nincs meg mit leallitania), mire ide erunk, es ha itt egyszeruen
+    # elinditjuk a qwen-translate-et, az "cudaMalloc failed: out of
+    # memory"-val elhasal, mert a Whisper mar foglalja a VRAM nagy
+    # reszet, es a ket modell EGYUTT tobbnyire nem fer bele egy 24GB-os
+    # kartyaba. Javitas: ideiglenesen leallitjuk a whisperx-backend-et,
+    # hagyjuk a qwen-translate-et TELJES, szabad VRAM-mal betolteni,
+    # majd ujrainditjuk a whisperx-backend-et — az O SAJAT scriptje
+    # ekkor mar korrektul leallitja MAJD a qwen-translate-et sajat maga
+    # elott (igy a kor bezarul, mindket szolgaltatas vegul helyesen fut).
+    supervisorctl stop whisperx-backend || true
+    sleep 2
     supervisorctl start qwen-translate || true
     echo "  qwen-translate (llama-server) regisztrálva és elindítva a supervisor alatt (port 8002)"
     echo "  napló: /var/log/portal/qwen-translate.log"
     echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) most, első induláskor töltődik le, majd a modell 6 mp inaktivitás után automatikusan kiürül a VRAM-ból (--sleep-idle-seconds)."
+    echo "  whisperx-backend ujrainditasa (a sajat scriptje leallitja majd a qwen-translate-et maga elott)..."
+    sleep 10
+    supervisorctl start whisperx-backend || true
 else
     echo "  FIGYELEM: nem talalhato a lefordított llama-server binaris ($LLAMA_SERVER_BIN) — a qwen-translate szolgaltatas nem lett regisztralva." >&2
 fi
