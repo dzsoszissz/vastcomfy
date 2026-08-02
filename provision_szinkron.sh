@@ -685,7 +685,20 @@ async def tts(
             "alapertelmezese: 1.0) tobb keretet/idot enged a generalasnak "
             "biztonsagi tartalekkent. Ha meg igy is levagna a vege, probalj meg "
             "kisebb erteket (pl. 0.7); ha tul lassunak/nyujtottnak hangzik, "
-            "novelheted 1.0 fele."
+            "novelheted 1.0 fele. HA fix_duration meg van adva, ez a parameter "
+            "figyelmen kivul marad (ld. lent)."
+        ),
+    ),
+    fix_duration: Optional[float] = Form(
+        None,
+        description=(
+            "Explicit celhossz masodpercben — ha meg van adva, TELJESEN "
+            "KIHAGYJA a F5-TTS sajat ref_text/gen_text karakterarany-alapu "
+            "becsleset (ami VALOS HIBAK ALAPJAN, 2026-08, megbizhatatlannak "
+            "bizonyult: felharapott szavak, hadaro/tul gyors beszed), es "
+            "kozvetlenul ennyi masodpercre generalja a kimenetet. Hasznald "
+            "ezt, ha ismered a celzott hossz — pl. a mi pipeline-unk a "
+            "szegmens sajat eredeti (angol) idotartamabol szamolja."
         ),
     ),
 ):
@@ -725,7 +738,11 @@ async def tts(
                     detail="Az automatikus atirat ures lett — adj meg explicit ref_text-et.",
                 )
 
-        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=effective_ref_text, gen_text=gen_text, speed=speed)
+        infer_kwargs = {"speed": speed}
+        if fix_duration is not None:
+            infer_kwargs = {"fix_duration": fix_duration}
+
+        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=effective_ref_text, gen_text=gen_text, **infer_kwargs)
     except HTTPException:
         raise
     except Exception as exc:
@@ -1052,9 +1069,20 @@ if [ -x "$LLAMA_SERVER_BIN" ]; then
 export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
 # FONTOS: -c 65536 (a kezdeti ertek) CUDA out-of-memory-t okozott a 24 GB-os
 # 3090-en — a 65536 tokenes kontextushoz tartozo KV-cache a Q4_K_M sulyok
-# (~16.8 GB) MELLETT mar nem fert bele. A mi feladatunkhoz (kotegelt
-# forditas, max_tokens felso hatara 24576, ld. router.py) 32768 bovel
-# eleg, es jelentosen kisebb KV-cache-et igenyel.
+# (~16.8 GB) MELLETT mar nem fert bele.
+#
+# -c 32768 -> 8192 (VALOS HIBA ALAPJAN TOVABB CSOKKENTVE, 2026-08): a
+# forditas mostantol NON-THINKING modban fut (ld. router.py, kereskent
+# enable_thinking:false), tehat a max_tokens sokkal kisebb, mint korabban
+# (max(2048, 150+szegmensszam*60), tipikusan par ezer token, NEM
+# tizezrek). A 32768-as kontextus feleslegesen sok VRAM-ot kotott le a
+# KV-cache-ben, ami "hol fut hol nem" jellegu, IDOSZAKOS CUDA OOM-ot
+# okozott: a qwen-translate a WHISPERX-BACKEND SAJAT FOLYAMATABAN kerul
+# meghivasra (/custom-ai/translate_batch), tehat amikor egy forditas a
+# transzkripcio UTAN jon, a Whisper-modell MAR bent van a VRAM-ban —
+# a ket modell EGYUTT csak epp hogy (nem mindig) fert bele 24GB-ba. A
+# 8192-es kontextus draMatikusan kisebb KV-cache-et igenyel, tobb helyet
+# hagyva a Whisper melle egyuttlétezéshez.
 #
 # --sleep-idle-seconds 6 (2026-08, valos hiba alapjan hozzaadva): eles
 # tesztunk kimutatta, hogy a llama-server allandoan, TETLENUL is majdnem
@@ -1069,7 +1097,7 @@ export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
 exec ${LLAMA_SERVER_BIN} \\
     -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
     --host 0.0.0.0 --port 8002 \\
-    -ngl 999 -c 32768 -fa on \\
+    -ngl 999 -c 8192 -fa on \\
     --sleep-idle-seconds 6 \\
     --jinja \\
     --reasoning on \\
