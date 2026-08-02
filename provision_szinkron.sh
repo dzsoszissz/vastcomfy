@@ -620,10 +620,36 @@ def get_f5tts():
     return model
 
 
+@functools.lru_cache
+def get_hungarian_asr():
+    # Maxdorger29/whisper-large-v3-hungarian-lora — a F5-TTS-Hungarian
+    # SZERZOJE altal, KIFEJEZETTEN erre a celra epitett ASR-modell:
+    # "milliméter-pontos" ref_text eloallitasa a F5-TTS-hez, mert az
+    # "erosen erzekeny az atirat-pontatlansagokra" (sajat modellkartya).
+    # User kerese (2026-08): ha a /tts hivas nem kap explicit ref_text-et,
+    # ez transzkribalja a ref_audio-t a TENYLEGES hangbol — ez pontosabb
+    # lehet, mint egy kezzel begepelt (akar szo szerinti) atirat, mert a
+    # tenyleges kiejtes/szunetek/hangsulyok alapjan keszul, nem irott
+    # szovegbol.
+    from faster_whisper import WhisperModel
+
+    return WhisperModel("Maxdorger29/whisper-large-v3-hungarian-lora", device="cuda", compute_type="float16")
+
+
 @custom_ai_router.post("/tts")
 async def tts(
     ref_audio: UploadFile = File(..., description="Referencia hangminta (5-15 mp, pl. speaker_00.wav)"),
-    ref_text: str = Form(..., description="A referencia hang pontos átirata"),
+    ref_text: str = Form(
+        "",
+        description=(
+            "A referencia hang pontos átirata. Ha üresen hagyod, a rendszer "
+            "automatikusan transzkribálja a ref_audio-t a Maxdorger29/"
+            "whisper-large-v3-hungarian-lora modellel (a F5-TTS-Hungarian "
+            "szerzője által kifejezetten erre a célra épített ASR) — ez "
+            "gyakran pontosabb, mint egy kézzel begépelt átirat, mert a "
+            "TÉNYLEGES hangzásból (szünetek, hangsúlyok) készül."
+        ),
+    ),
     gen_text: str = Form(..., description="A felolvasandó/generálandó magyar szöveg"),
     speed: float = Form(
         0.85,
@@ -648,7 +674,26 @@ async def tts(
         tmp_ref_path = tmp_ref.name
 
     try:
-        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=ref_text, gen_text=gen_text, speed=speed)
+        effective_ref_text = ref_text.strip()
+        if not effective_ref_text:
+            try:
+                asr = get_hungarian_asr()
+                segments, _info = asr.transcribe(tmp_ref_path, language="hu")
+                effective_ref_text = " ".join(seg.text.strip() for seg in segments).strip()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Automatikus ref_text-atirat (Hungarian ASR LoRA) sikertelen: {exc}",
+                )
+            if not effective_ref_text:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Az automatikus atirat ures lett — adj meg explicit ref_text-et.",
+                )
+
+        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=effective_ref_text, gen_text=gen_text, speed=speed)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"F5-TTS generálási hiba: {exc}")
     finally:
