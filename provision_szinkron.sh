@@ -726,6 +726,47 @@ async def tts(
     return StreamingResponse(buffer, media_type="audio/wav")
 
 
+# ============================================================
+# Magyar szoveg-normalizalas F5-TTS-hez — a sarpba/hun repo SAJAT,
+# klonozott forraskodjabol (NEM sajat irasu — user kifejezett kerese:
+# csak tenylegesen letezo, ellenorzott kodot hasznaljunk, ne sajat
+# talalmanyt). A normalize() fuggveny sorszamokat/datumokat/idopontokat
+# ir at szoveggé, mozaikszavakat betuz, es KISBETUSSE alakitja + "... "
+# elotagot ad a szoveghez — ez a repo SAJAT, dokumentalt, ELOIRT
+# mukodese (nem mellekhatas), a modell sajat mintai is mind kisbetusek.
+# Forras: https://github.com/sarpba/hun
+# ============================================================
+
+@functools.lru_cache
+def get_hun_normalizer():
+    import sys
+
+    normalizer_dir = os.environ.get("HUN_NORMALIZER_DIR", "/workspace/models/hun-normalizer")
+    if normalizer_dir not in sys.path:
+        sys.path.insert(0, normalizer_dir)
+    from normaliser import normalize
+
+    return normalize
+
+
+class NormalizeTextRequest(BaseModel):
+    text: str
+
+
+class NormalizeTextResponse(BaseModel):
+    normalized_text: str
+
+
+@custom_ai_router.post("/normalize_text", response_model=NormalizeTextResponse)
+def normalize_text(req: NormalizeTextRequest):
+    try:
+        normalize_fn = get_hun_normalizer()
+        result = normalize_fn(req.text)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Szoveg-normalizalasi hiba: {exc}")
+    return NormalizeTextResponse(normalized_text=result)
+
+
 @custom_ai_router.get("/health")
 def health():
     return {"status": "ok"}
@@ -1144,6 +1185,33 @@ set -e
 
 echo "  F5-TTS magyar checkpoint helye: ${F5TTS_HU_DIR}"
 echo "  EMLEKEZTETO: ez a checkpoint CC-BY-NC-4.0 — csak nem-kereskedelmi hasznalatra!"
+df -h / | tail -1
+
+###############################################################################
+# 9b. Magyar szoveg-normalizalo (sarpba/hun) — a /custom-ai/normalize_text
+#     vegponthoz. NEM sajat iras — a tenyleges, valos repo klonozasa, hogy
+#     mindig a hivatalos forras fusson, ne egy esetleg hibas masolat.
+#     Forras: https://github.com/sarpba/hun
+###############################################################################
+echo "--- 9b. Magyar szoveg-normalizalo (sarpba/hun) telepitese ---"
+
+set +e
+
+HUN_NORMALIZER_DIR="${WORKSPACE_DIR}/models/hun-normalizer"
+if [ -d "$HUN_NORMALIZER_DIR/.git" ]; then
+    (cd "$HUN_NORMALIZER_DIR" && git pull)
+else
+    rm -rf "$HUN_NORMALIZER_DIR"
+    git clone https://github.com/sarpba/hun.git "$HUN_NORMALIZER_DIR"
+fi
+
+python -m pip install -q num2words
+if [ $? -ne 0 ]; then
+    echo "  FIGYELEM: a num2words telepitese nem sikerult — a /custom-ai/normalize_text vegpont nem fog mukodni." >&2
+fi
+
+set -e
+
 df -h / | tail -1
 
 ###############################################################################
