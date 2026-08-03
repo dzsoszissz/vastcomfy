@@ -426,6 +426,20 @@ async def tts(
     speed: float = Form(1.0, description="Sebesség-szorzó (alapérték: 1.0 — a könyvtár saját alapértéke)."),
     fix_duration: Optional[float] = Form(None, description="Explicit célhossz mp-ben (referencia+generált együtt). Alapból None (auto-becslés)."),
     remove_silence: bool = Form(False, description="A generált hang végi/eleji csend eltávolítása utófeldolgozással (alapérték: False)."),
+    use_official_preprocessing: bool = Form(
+        True,
+        description=(
+            "VALÓS, FORRÁSBÓL IGAZOLT ELTÉRÉS (2026-08): a Gradio-app/CLI "
+            "MINDIG meghívja a f5_tts.infer.utils_infer.preprocess_ref_audio_text() "
+            "függvényt a generálás előtt — ez levágja a csendet a referencia "
+            "hang elejéről/végéről, pontosan 50ms csendet ad a végéhez (NEM "
+            "1mp-et, mint a mi korábbi SAMPLE_PAD_SECONDS-unk), 12mp fölött "
+            "vágja a klipet, és biztosítja hogy a ref_text mondatzáró "
+            "írásjelre/szóközre végződjön. Ezt korábban SOHA nem hívtuk. "
+            "Alapból BE van kapcsolva (true) — állítsd false-ra, ha ki "
+            "akarod hagyni, összehasonlításhoz."
+        ),
+    ),
 ):
     import soundfile as sf
 
@@ -463,8 +477,16 @@ async def tts(
                     detail="Az automatikus atirat ures lett — adj meg explicit ref_text-et.",
                 )
 
+        effective_ref_path = tmp_ref_path
+        if use_official_preprocessing:
+            from f5_tts.infer.utils_infer import preprocess_ref_audio_text
+
+            effective_ref_path, effective_ref_text = preprocess_ref_audio_text(
+                tmp_ref_path, effective_ref_text, show_info=lambda *a, **kw: None
+            )
+
         wav, sr, _ = model.infer(
-            ref_file=tmp_ref_path,
+            ref_file=effective_ref_path,
             ref_text=effective_ref_text,
             gen_text=gen_text,
             target_rms=target_rms,
