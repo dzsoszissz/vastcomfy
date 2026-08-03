@@ -408,18 +408,25 @@ async def tts(
             "nem kuldi ezt true-ra, csak kezi/curl tesztekhez valo."
         ),
     ),
+    # ========================================================
+    # ALÁBBI PARAMÉTEREK (2026-08): a F5TTS.infer() TÉNYLEGES,
+    # ellenőrzött szignatúrája (SWivid/F5-TTS api.py, hitelesített
+    # commit-diffből, NEM feltételezés) — mindegyik PONTOSAN a
+    # könyvtár saját alapértékén all, ha nem küldöd őket, tehát a
+    # viselkedés a dokumentált alapbeállítással EGYEZIK. User kifejezett
+    # kérése: ne "varázsoljunk" a szerveroldalon, hanem a TELJES
+    # paraméterfelület legyen közvetlenül tesztelhető curl-lel, gyors
+    # iterációhoz, a lassú, teljes pipeline megkerülésével.
+    # ========================================================
+    target_rms: float = Form(0.1, description="Célzott RMS hangerő-normalizáláshoz (könyvtár alapértéke: 0.1)."),
+    cross_fade_duration: float = Form(0.15, description="Átfedés (mp) a batch-ek/szegmensek között (alapérték: 0.15)."),
+    sway_sampling_coef: float = Form(-1.0, description="Sway sampling együttható a flow-matching mintavételezéshez (alapérték: -1)."),
+    cfg_strength: float = Form(2.0, description="Classifier-free guidance erőssége — magasabb: stabilabb, kevésbé kifejező (alapérték: 2)."),
+    nfe_step: int = Form(32, description="ODE-lépések száma — magasabb: jobb minőség, lassabb (alapérték: 32; 16=gyors, 64=legjobb minőség)."),
+    speed: float = Form(1.0, description="Sebesség-szorzó (alapérték: 1.0 — a könyvtár saját alapértéke)."),
+    fix_duration: Optional[float] = Form(None, description="Explicit célhossz mp-ben (referencia+generált együtt). Alapból None (auto-becslés)."),
+    remove_silence: bool = Form(False, description="A generált hang végi/eleji csend eltávolítása utófeldolgozással (alapérték: False)."),
 ):
-    # FONTOS (2026-08): a "speed" es "fix_duration" parameterekkel valo
-    # sajat kiserletezes (0.85, majd 0.72, majd fix_duration-szamitasok)
-    # TOBB VALOS, ROSSZABB HIBAT okozott (csonka szoveg, majd az EREDETI
-    # ANGOL SZOVEG beszivargasa a kimenetbe) — egyiket sem sikerult
-    # megbizhatoan, dokumentumokkal igazolva helyesen bealitani. VISSZA-
-    # TERES a F5-TTS HIVATALOS, ALAPSZINTU pelda-kodjahoz (README.md,
-    # SWivid/F5-TTS repo): CSAK ref_file/ref_text/gen_text, semmi mas
-    # override — a konyvtar sajat belso alapertekeit hasznalja
-    # (speed=1.0, fix_duration=None). Ha ez nem eleg jo minosegu, azt
-    # KULON, tenyek/dokumentacio alapjan kell megoldani, nem talalgatva
-    # parameter-ertekeket.
     import soundfile as sf
 
     model = get_f5tts()
@@ -456,7 +463,19 @@ async def tts(
                     detail="Az automatikus atirat ures lett — adj meg explicit ref_text-et.",
                 )
 
-        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=effective_ref_text, gen_text=gen_text)
+        wav, sr, _ = model.infer(
+            ref_file=tmp_ref_path,
+            ref_text=effective_ref_text,
+            gen_text=gen_text,
+            target_rms=target_rms,
+            cross_fade_duration=cross_fade_duration,
+            sway_sampling_coef=sway_sampling_coef,
+            cfg_strength=cfg_strength,
+            nfe_step=nfe_step,
+            speed=speed,
+            fix_duration=fix_duration,
+            remove_silence=remove_silence,
+        )
     except HTTPException:
         raise
     except Exception as exc:
