@@ -390,31 +390,20 @@ QWEN_LLAMA_SERVER_URL = os.environ.get("QWEN_LLAMA_SERVER_URL", "http://127.0.0.
 
 def _ensure_qwen_translate_running(timeout_seconds: int = 240) -> None:
     """
-    A whisperx-backend indito scriptje (whisperx-backend.sh) MINDEN
-    inditasakor explicit LEALLITJA a qwen-translate folyamatot, hogy
-    garantaltan legyen szabad VRAM a Whisper-modell (mohon, induláskor
-    betoltodo) sajat inditasahoz — lasd a script kommentjet. Emiatt a
-    qwen-translate "stopped" allapotban maradhat, amig ez a fuggveny
-    (vagy valaki kezzel) ujra el nem inditja.
-    Elobb egy gyors /health-csekket probal (ez NEM ebreszti fel a
-    --sleep-idle-seconds altal elaltatott MODELLT, de ha a FOLYAMAT fut,
-    valaszol ra) — ha nem valaszol (a folyamat le van allitva), explicit
-    supervisorctl start-tal ujrainditja, majd varakozik, amig elerhetove
-    nem valik.
+    ROUTER MOD ota (2026-08) a qwen-translate folyamata MINDIG fut —
+    sem a whisperx-backend.sh, sem a provisioning nem allitja le tobbe
+    (a korabbi, egyedi stop/start-vezenyles megszunt, ld. 8. lepes
+    kommentje). A /health tehat rendszerint AZONNAL valaszol, meg akkor
+    is, ha a MODELL maga eppen nincs betoltve (a router-folyamat maga
+    konnyu). Ez a fuggveny csak arra az esetre marad meg, ha a folyamat
+    valamiert (crash, meg be nem fejezett supervisor-inditas) epp nem
+    valaszol — ekkor egyszeruen VAR, ES UJRAPROBALJA, de MAR NEM hiv
+    supervisorctl-t (nincs mit "elinditania" — az autostart+autorestart
+    ezt magatol kezeli).
     """
-    import subprocess
     import time
 
     import requests
-
-    try:
-        resp = requests.get(f"{QWEN_LLAMA_SERVER_URL}/health", timeout=3)
-        if resp.status_code == 200:
-            return
-    except requests.RequestException:
-        pass
-
-    subprocess.run(["supervisorctl", "start", "qwen-translate"], check=False)
 
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -427,7 +416,7 @@ def _ensure_qwen_translate_running(timeout_seconds: int = 240) -> None:
         time.sleep(3)
 
     raise RuntimeError(
-        f"A qwen-translate (llama-server) nem allt fel {timeout_seconds} masodpercen belul."
+        f"A qwen-translate (llama-server) nem valaszol {timeout_seconds} masodpercen belul."
     )
 
 
@@ -675,33 +664,18 @@ async def tts(
             "nem kuldi ezt true-ra, csak kezi/curl tesztekhez valo."
         ),
     ),
-    speed: float = Form(
-        0.85,
-        description=(
-            "Az F5-TTS a kimenet hosszat a ref_text/gen_text KARAKTERARANYABOL "
-            "becsuli — ha a ket szoveg kulonbozo nyelvu (nalunk tipikusan angol "
-            "ref_text, magyar gen_text), ez az arany felreviheti a becslest es "
-            "korai levagast okozhat. Az alapertelmezett 0.85 (a konyvtar sajat "
-            "alapertelmezese: 1.0) tobb keretet/idot enged a generalasnak "
-            "biztonsagi tartalekkent. Ha meg igy is levagna a vege, probalj meg "
-            "kisebb erteket (pl. 0.7); ha tul lassunak/nyujtottnak hangzik, "
-            "novelheted 1.0 fele. HA fix_duration meg van adva, ez a parameter "
-            "figyelmen kivul marad (ld. lent)."
-        ),
-    ),
-    fix_duration: Optional[float] = Form(
-        None,
-        description=(
-            "Explicit celhossz masodpercben — ha meg van adva, TELJESEN "
-            "KIHAGYJA a F5-TTS sajat ref_text/gen_text karakterarany-alapu "
-            "becsleset (ami VALOS HIBAK ALAPJAN, 2026-08, megbizhatatlannak "
-            "bizonyult: felharapott szavak, hadaro/tul gyors beszed), es "
-            "kozvetlenul ennyi masodpercre generalja a kimenetet. Hasznald "
-            "ezt, ha ismered a celzott hossz — pl. a mi pipeline-unk a "
-            "szegmens sajat eredeti (angol) idotartamabol szamolja."
-        ),
-    ),
 ):
+    # FONTOS (2026-08): a "speed" es "fix_duration" parameterekkel valo
+    # sajat kiserletezes (0.85, majd 0.72, majd fix_duration-szamitasok)
+    # TOBB VALOS, ROSSZABB HIBAT okozott (csonka szoveg, majd az EREDETI
+    # ANGOL SZOVEG beszivargasa a kimenetbe) — egyiket sem sikerult
+    # megbizhatoan, dokumentumokkal igazolva helyesen bealitani. VISSZA-
+    # TERES a F5-TTS HIVATALOS, ALAPSZINTU pelda-kodjahoz (README.md,
+    # SWivid/F5-TTS repo): CSAK ref_file/ref_text/gen_text, semmi mas
+    # override — a konyvtar sajat belso alapertekeit hasznalja
+    # (speed=1.0, fix_duration=None). Ha ez nem eleg jo minosegu, azt
+    # KULON, tenyek/dokumentacio alapjan kell megoldani, nem talalgatva
+    # parameter-ertekeket.
     import soundfile as sf
 
     model = get_f5tts()
@@ -738,11 +712,7 @@ async def tts(
                     detail="Az automatikus atirat ures lett — adj meg explicit ref_text-et.",
                 )
 
-        infer_kwargs = {"speed": speed}
-        if fix_duration is not None:
-            infer_kwargs = {"fix_duration": fix_duration}
-
-        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=effective_ref_text, gen_text=gen_text, **infer_kwargs)
+        wav, sr, _ = model.infer(ref_file=tmp_ref_path, ref_text=effective_ref_text, gen_text=gen_text)
     except HTTPException:
         raise
     except Exception as exc:
@@ -952,20 +922,6 @@ mkdir -p /opt/supervisor-scripts
 
 cat > /opt/supervisor-scripts/whisperx-backend.sh <<EOF
 #!/bin/bash
-# FONTOS (valos hiba alapjan hozzaadva, 2026-08): a WhisperX-WebUI sajat
-# lifespan()-je MOHON, INDULASKOR tolti be a Whisper-modellt VRAM-ba (nem
-# lustan, elso hivasra) — ha a qwen-translate (llama-server) epp aktivan
-# bent van a VRAM-ban ebben a pillanatban, a whisperx-backend inditasa
-# "CUDA failed with error out of memory"-val elhasal, es a folyamat vegtelen
-# ujraprobalkozasi korbe (STARTING allapot) ragad. Ahelyett hogy a
-# felhasznalora bizna a helyes sorrend betartasat (elobb qwen-translate
-# leallitasa, csak utana whisperx-backend inditas), ez MOSTANTOL automatikus
-# — minden inditaskor (kezi VAGY supervisor-autorestart altal kivaltott is)
-# elobb leallitja a qwen-translate-et. A "|| true" azert kell, mert az elso
-# valaha-futtatott provisioning soran (mielott meg a 8. lepes regisztralna
-# a qwen-translate-et) ez a program meg nem is letezik a supervisornal.
-supervisorctl stop qwen-translate || true
-sleep 2
 source /venv/main/bin/activate
 cd "${REPO_DIR}"
 exec uvicorn backend.main:app --host 0.0.0.0 --port 8000
@@ -1064,44 +1020,46 @@ LLAMA_GGUF_CACHE="${WORKSPACE_DIR}/models/llama-gguf-cache"
 mkdir -p "$LLAMA_GGUF_CACHE"
 
 if [ -x "$LLAMA_SERVER_BIN" ]; then
+    # ROUTER MOD (2026-08, VALOS HIBA ALAPJAN, teljes atiras): korabban a
+    # qwen-translate EGYETLEN modellkent, -hf kapcsoloval indult, ami
+    # MOHON, AZONNAL a szerver inditasakor betolti a modellt VRAM-ba —
+    # emiatt kellett a sajat, egyedi (nem dokumentalt) stop/start-tanc a
+    # whisperx-backend korul, hogy a ket folyamat sose probaljon egyszerre
+    # VRAM-ot foglalni. Ez a hivatalos llama-server ROUTER MOD-javal
+    # kivalthato: a router folyamat MAGA konnyu, NEM tolt be semmit
+    # inditaskor (models-autoload alapertelmezetten bekapcsolva = a
+    # modell csak az ELSO TENYLEGES keresre toltodik be), a
+    # --sleep-idle-seconds pedig utana is kiuriti tetlenul. Forras:
+    # https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+    # ("load-on-startup: Controls whether the model loads automatically
+    # when the server starts"; "--models-autoload ... default: enabled").
+    #
+    # Ezzel a whisperx-backend.sh es a provisioning kozotti teljes,
+    # egyedi stop/start-vezenyles (nem dokumentalt, sajat talalmany volt)
+    # MEGSZUNIK — a ket folyamat egyszerre, egymastol fuggetlenul
+    # indulhat, mert a qwen-translate router-folyamata inditaskor nem
+    # nyul a VRAM-hoz.
+    QWEN_MODELS_INI="${WORKSPACE_DIR}/models/llama-configs/qwen-translate.ini"
+    mkdir -p "$(dirname "$QWEN_MODELS_INI")"
+    cat > "$QWEN_MODELS_INI" <<'INIEOF'
+[qwen3.6-27b]
+hf-repo = unsloth/Qwen3.6-27B-GGUF:Q4_K_M
+n-gpu-layers = 999
+ctx-size = 8192
+flash-attn = on
+sleep-idle-seconds = 6
+reasoning = on
+jinja = true
+load-on-startup = false
+INIEOF
+
     cat > /opt/supervisor-scripts/qwen-translate.sh <<EOF
 #!/bin/bash
 export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
-# FONTOS: -c 65536 (a kezdeti ertek) CUDA out-of-memory-t okozott a 24 GB-os
-# 3090-en — a 65536 tokenes kontextushoz tartozo KV-cache a Q4_K_M sulyok
-# (~16.8 GB) MELLETT mar nem fert bele.
-#
-# -c 32768 -> 8192 (VALOS HIBA ALAPJAN TOVABB CSOKKENTVE, 2026-08): a
-# forditas mostantol NON-THINKING modban fut (ld. router.py, kereskent
-# enable_thinking:false), tehat a max_tokens sokkal kisebb, mint korabban
-# (max(2048, 150+szegmensszam*60), tipikusan par ezer token, NEM
-# tizezrek). A 32768-as kontextus feleslegesen sok VRAM-ot kotott le a
-# KV-cache-ben, ami "hol fut hol nem" jellegu, IDOSZAKOS CUDA OOM-ot
-# okozott: a qwen-translate a WHISPERX-BACKEND SAJAT FOLYAMATABAN kerul
-# meghivasra (/custom-ai/translate_batch), tehat amikor egy forditas a
-# transzkripcio UTAN jon, a Whisper-modell MAR bent van a VRAM-ban —
-# a ket modell EGYUTT csak epp hogy (nem mindig) fert bele 24GB-ba. A
-# 8192-es kontextus draMatikusan kisebb KV-cache-et igenyel, tobb helyet
-# hagyva a Whisper melle egyuttlétezéshez.
-#
-# --sleep-idle-seconds 6 (2026-08, valos hiba alapjan hozzaadva): eles
-# tesztunk kimutatta, hogy a llama-server allandoan, TETLENUL is majdnem
-# a teljes VRAM-ot (24115/24576 MiB) lefoglalva tartotta, ami miatt a
-# Whisper-modell betoltese "CUDA failed with error out of memory" hibaval
-# elhasalt. A llama.cpp sajat, natív megoldasa erre a --sleep-idle-seconds
-# kapcsolo (PR #18228, 2026 januar): a szerver FOLYAMAT eleiben marad,
-# de 6 mp inaktivitas utan a modellt es a KV-cache-et KIURITI a VRAM-bol
-# — a kovetkezo tenyleges keres automatikusan visszatolti. A /health
-# vegpontunk KIFEJEZETTEN nem szamit "aktivitasnak", tehat allapot-
-# ellenorzessel nem tartjuk eberen feleslegesen.
 exec ${LLAMA_SERVER_BIN} \\
-    -hf unsloth/Qwen3.6-27B-GGUF:Q4_K_M \\
     --host 0.0.0.0 --port 8002 \\
-    -ngl 999 -c 8192 -fa on \\
-    --sleep-idle-seconds 6 \\
-    --jinja \\
-    --reasoning on \\
-    --chat-template-kwargs '{"preserve_thinking": true}'
+    --models-preset ${QWEN_MODELS_INI} \\
+    --models-max 1
 EOF
     chmod +x /opt/supervisor-scripts/qwen-translate.sh
 
@@ -1119,28 +1077,10 @@ EOF
 
     supervisorctl reread
     supervisorctl update
-    # FONTOS (valos hiba alapjan, 2026-08): FORDITOTT VRAM-utkozes, amit
-    # eddig nem kezeltunk. A whisperx-backend.sh a SAJAT indulasa elott
-    # leallitja a qwen-translate-et — de forditva semmi nem vedett: egy
-    # VADONATUJ instance-on a 7. lepes MAR betoltotte a Whisper-modellt
-    # (nincs meg mit leallitania), mire ide erunk, es ha itt egyszeruen
-    # elinditjuk a qwen-translate-et, az "cudaMalloc failed: out of
-    # memory"-val elhasal, mert a Whisper mar foglalja a VRAM nagy
-    # reszet, es a ket modell EGYUTT tobbnyire nem fer bele egy 24GB-os
-    # kartyaba. Javitas: ideiglenesen leallitjuk a whisperx-backend-et,
-    # hagyjuk a qwen-translate-et TELJES, szabad VRAM-mal betolteni,
-    # majd ujrainditjuk a whisperx-backend-et — az O SAJAT scriptje
-    # ekkor mar korrektul leallitja MAJD a qwen-translate-et sajat maga
-    # elott (igy a kor bezarul, mindket szolgaltatas vegul helyesen fut).
-    supervisorctl stop whisperx-backend || true
-    sleep 2
-    supervisorctl start qwen-translate || true
-    echo "  qwen-translate (llama-server) regisztrálva és elindítva a supervisor alatt (port 8002)"
+    supervisorctl restart qwen-translate
+    echo "  qwen-translate (llama-server, ROUTER MOD) regisztrálva és elindítva a supervisor alatt (port 8002)"
     echo "  napló: /var/log/portal/qwen-translate.log"
-    echo "  MEGJEGYZÉS: a GGUF (~16.8 GB) most, első induláskor töltődik le, majd a modell 6 mp inaktivitás után automatikusan kiürül a VRAM-ból (--sleep-idle-seconds)."
-    echo "  whisperx-backend ujrainditasa (a sajat scriptje leallitja majd a qwen-translate-et maga elott)..."
-    sleep 10
-    supervisorctl start whisperx-backend || true
+    echo "  MEGJEGYZÉS: a router-folyamat maga konnyu, a GGUF (~16.8 GB) csak az ELSŐ tényleges fordítási kérésre töltődik be, majd 6 mp inaktivitás után automatikusan kiürül."
 else
     echo "  FIGYELEM: nem talalhato a lefordított llama-server binaris ($LLAMA_SERVER_BIN) — a qwen-translate szolgaltatas nem lett regisztralva." >&2
 fi
