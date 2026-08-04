@@ -508,7 +508,13 @@ async def tts(
     buffer = io.BytesIO()
     sf.write(buffer, wav, sr, format="WAV")
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type="audio/wav")
+    from urllib.parse import quote
+
+    return StreamingResponse(
+        buffer,
+        media_type="audio/wav",
+        headers={"X-Effective-Ref-Text": quote(effective_ref_text)},
+    )
 
 
 # ============================================================
