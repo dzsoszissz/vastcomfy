@@ -3,8 +3,9 @@
 # Vast.ai provisioning szkript — chboishabba/WhisperX-WebUI
 #
 # Alapelvek (lásd VastAI_WhisperX-WebUI_Specifikacio_v4.md):
-#   - EZ A SZKRIPT A vastai/pytorch:2.8.0-cuda-12.6.3-py310-24.04-2026-06-15
-#     IMAGE-HEZ KÉSZÜLT (nem a korábbi 2.7.1-hez). A friss torch 2.8.0
+#   - EZ A SZKRIPT A vastai/pytorch:2.8.0-cuda-12.8.1-py310-24.04-2026-06-15
+#     IMAGE-HEZ KÉSZÜLT (nem a korábbi 2.7.1-hez, es a korabbi 12.6.3-tag
+#     helyett most 12.8.1). A friss torch 2.8.0
 #     gyárilag kielégíti a whisperx/pyannote.audio saját torch~=2.8.0
 #     követelményét, így a pip nem próbál konfliktusos verziót erőltetni,
 #     és a friss pyannote.audio (>=4.0) + huggingface_hub (>=0.28.1)
@@ -509,9 +510,11 @@ echo "  napló: /var/log/portal/whisperx-backend.log"
 # külön KL-divergencia-benchmarkkal is összemérték más kiadókkal.
 #
 # ISMERT HIBA (dokumentált): unsloth saját dokumentációja szerint CUDA
-# 13.2-vel a Qwen3.6 GGUF értelmetlen ("gibberish") kimenetet adhat. A mi
-# képünk CUDA 12.6.3-at használ — ez rendben van, de HA valaha a képet
-# frissítenénk, ezt ELLENŐRIZNI KELL újra.
+# 13.2-vel a Qwen3.6 GGUF értelmetlen ("gibberish") kimenetet adhat.
+# ELLENORIZVE (2026-08): a kep idokozben CUDA 12.8.1-re valtozott (nem
+# 12.6.3, ahogy korabban itt allt) — ez MEG MINDIG messze a problemas
+# 13.2 alatt van, tehat ez a konkret hiba nem erint. HA a kep legkozelebb
+# is valtozik, EZT UJRA ELLENORIZNI KELL.
 #
 # A modellt magát a llama-server "-hf" kapcsolója tölti le AUTOMATIKUSAN,
 # első induláskor, közvetlenül a HuggingFace-ről — nincs külön
@@ -532,26 +535,102 @@ if [ $? -ne 0 ]; then
 fi
 
 LLAMA_CPP_DIR="${WORKSPACE_DIR}/llama.cpp"
-if [ -d "${LLAMA_CPP_DIR}/.git" ]; then
-    echo "  llama.cpp mar letezik, frissites..."
-    git -C "$LLAMA_CPP_DIR" pull
-else
-    git clone https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_DIR"
-fi
+LLAMA_PREBUILT_DIR="${WORKSPACE_DIR}/llama.cpp-prebuilt"
+LLAMA_PREBUILT_OK=0
 
-if [ -d "$LLAMA_CPP_DIR" ]; then
-    cmake -B "${LLAMA_CPP_DIR}/build" -S "$LLAMA_CPP_DIR" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
-    cmake --build "${LLAMA_CPP_DIR}/build" --config Release -j"$(nproc)" --target llama-server
-    if [ $? -ne 0 ]; then
-        echo "  FIGYELEM: a llama.cpp (llama-server) epitese nem sikerult — a forditasi funkcio nem lesz elerheto, de a tobbi szolgaltatas fut tovabb." >&2
+# ELOSZOR: kesz CUDA-bininaris letoltese (ai-dock/llama.cpp-cuda) — a
+# hivatalos ggml-org repo NEM ad ki CUDA-binarist Linuxra, ez a projekt
+# ezt a hianyt poltolja. A kepunk CUDA 12.8.1, ehhez a "cuda-12.8-amd64"
+# csomag illik. Csak akkor esunk vissza forrasbol epitesre, ha a letoltes
+# vagy a tenyleges futtatas sikertelen.
+echo "  Kesz CUDA-bininaris probaja (ai-dock/llama.cpp-cuda, CUDA 12.8)..."
+mkdir -p "$LLAMA_PREBUILT_DIR"
+LLAMA_ASSET_URL=$(curl -s https://api.github.com/repos/ai-dock/llama.cpp-cuda/releases/latest \
+    | grep "browser_download_url" | grep "cuda-12.8-amd64" | cut -d '"' -f 4 | head -1)
+
+if [ -n "$LLAMA_ASSET_URL" ]; then
+    echo "  Talalt csomag: $LLAMA_ASSET_URL"
+    curl -fsSL "$LLAMA_ASSET_URL" -o "${LLAMA_PREBUILT_DIR}/llama-cuda.tar.gz"
+    if [ $? -eq 0 ]; then
+        tar -xzf "${LLAMA_PREBUILT_DIR}/llama-cuda.tar.gz" -C "$LLAMA_PREBUILT_DIR"
+        LLAMA_SERVER_CANDIDATE=$(find "$LLAMA_PREBUILT_DIR" -type f -name "llama-server" | head -1)
+        if [ -n "$LLAMA_SERVER_CANDIDATE" ]; then
+            chmod +x "$LLAMA_SERVER_CANDIDATE"
+            # Tenyleges futtatasi teszt — nem eleg, hogy letoltodott, tenyleg
+            # el is kell induljon (pl. hianyzo CUDA-runtime-lib nem mindig
+            # derul ki puszta letezesbol).
+            if "$LLAMA_SERVER_CANDIDATE" --version > /tmp/llama_prebuilt_test.log 2>&1; then
+                echo "  Kesz bininaris MUKODIK: $LLAMA_SERVER_CANDIDATE"
+                LLAMA_SERVER_BIN="$LLAMA_SERVER_CANDIDATE"
+                LLAMA_PREBUILT_OK=1
+            else
+                echo "  FIGYELEM: a kesz bininaris letoltodott, de nem futtathato (lasd /tmp/llama_prebuilt_test.log) — visszaeses forrasbol epitesre." >&2
+                cat /tmp/llama_prebuilt_test.log >&2
+            fi
+        else
+            echo "  FIGYELEM: a letoltott csomagban nem talalhato llama-server — visszaeses forrasbol epitesre." >&2
+        fi
+    else
+        echo "  FIGYELEM: a kesz bininaris letoltese nem sikerult — visszaeses forrasbol epitesre." >&2
     fi
 else
-    echo "  FIGYELEM: a llama.cpp klonozasa nem sikerult." >&2
+    echo "  FIGYELEM: nem talalhato megfelelo kesz csomag (cuda-12.8-amd64) — visszaeses forrasbol epitesre." >&2
 fi
 
-LLAMA_SERVER_BIN="${LLAMA_CPP_DIR}/build/bin/llama-server"
+if [ "$LLAMA_PREBUILT_OK" -eq 0 ]; then
+    echo "  Forrasbol epites (visszaeses)..."
+    if [ -d "${LLAMA_CPP_DIR}/.git" ]; then
+        echo "  llama.cpp mar letezik, frissites..."
+        git -C "$LLAMA_CPP_DIR" pull
+    else
+        git clone https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_DIR"
+    fi
+
+    if [ -d "$LLAMA_CPP_DIR" ]; then
+        cmake -B "${LLAMA_CPP_DIR}/build" -S "$LLAMA_CPP_DIR" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+        cmake --build "${LLAMA_CPP_DIR}/build" --config Release -j"$(nproc)" --target llama-server
+        if [ $? -ne 0 ]; then
+            echo "  FIGYELEM: a llama.cpp (llama-server) epitese nem sikerult — a forditasi funkcio nem lesz elerheto, de a tobbi szolgaltatas fut tovabb." >&2
+        fi
+        LLAMA_SERVER_BIN="${LLAMA_CPP_DIR}/build/bin/llama-server"
+    else
+        echo "  FIGYELEM: a llama.cpp klonozasa nem sikerult." >&2
+        LLAMA_SERVER_BIN="${LLAMA_CPP_DIR}/build/bin/llama-server"
+    fi
+fi
+
 LLAMA_GGUF_CACHE="${WORKSPACE_DIR}/models/llama-gguf-cache"
 mkdir -p "$LLAMA_GGUF_CACHE"
+
+# VALOS HIBA ALAPJAN HOZZAADVA (2026-08): user eszlelte, hogy a Qwen GGUF
+# (~16.8 GB) letoltese a llama-server SAJAT -hf mechanizmusaval
+# eszelosen lassu (45 perc alatt csak 5.4 GB). Kideritve: a fajl a
+# HuggingFace UJ, Xet-alapu tarolasaval van feltoltve (nem sima Git-LFS),
+# amihez a gyorsitott letoltes a "hf_xet" csomagot igenyli — ezt a
+# llama.cpp SAJAT, C++ letoltoje valoszinuleg nem implementalja, es nyers,
+# nem-gyorsitott HTTP-letoltesre esik vissza. MEGOLDAS: elore letoltjuk
+# Python huggingface_hub-bal (ami tamogatja a Xet-gyorsitast) PONTOSAN
+# abba a gyorsitotar-konyvtarba, amit a llama-server maga is hasznalna —
+# igy amikor a llama-server elindul, mar KESZEN talalja, nem tolt le
+# semmit ujra. Ha ez a lepes barmiert sikertelen, a llama-server sajat
+# (lassabb, de mukodo) letoltese lesz a visszaeses.
+echo "  Qwen GGUF elore letoltese (Xet-gyorsitassal, huggingface_hub)..."
+pip install -q "huggingface_hub[hf_xet]" 2>&1 | tail -3
+python3 - <<PYEOF
+import os
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")  # a hf_xet a preferalt, nem a regi hf_transfer
+try:
+    from huggingface_hub import hf_hub_download
+    path = hf_hub_download(
+        repo_id="unsloth/Qwen3.6-27B-GGUF",
+        filename="Qwen3.6-27B-Q4_K_M.gguf",
+        cache_dir="${LLAMA_GGUF_CACHE}",
+        token=os.environ.get("HF_TOKEN"),
+    )
+    print(f"  Elore letoltve: {path}")
+except Exception as exc:
+    print(f"  FIGYELEM: elozetes letoltes sikertelen ({exc}) — a llama-server sajat letoltesere esunk vissza.")
+PYEOF
 
 if [ -x "$LLAMA_SERVER_BIN" ]; then
     # ROUTER MOD (2026-08, VALOS HIBA ALAPJAN, teljes atiras): korabban a
@@ -590,6 +669,17 @@ INIEOF
     cat > /opt/supervisor-scripts/qwen-translate.sh <<EOF
 #!/bin/bash
 export LLAMA_CACHE="${LLAMA_GGUF_CACHE}"
+# VALOS HIBA ALAPJAN HOZZAADVA (2026-08): a llama-server -hf/--hf-repo
+# letoltese hivatalosan a HF_TOKEN kornyezeti valtozot hasznalja
+# hitelesiteshez ("-hft, --hf-token TOKEN ... default: value from
+# HF_TOKEN environment variable", forras: ggml-org/llama.cpp/tools/
+# server/README.md). Ezt korabban SOSEM allitottuk be ebben a scriptben
+# — a supervisord sajat kornyezete nem feltetlenul orokli a provisioning
+# sajat, interaktiv shell-jenek HF_TOKEN-jet, ezert itt explicit
+# exportaljuk (a provision.sh sajat futasa mar megkoveteli, hogy HF_TOKEN
+# be legyen allitva, ld. szkript eleje). User eszlelte: a letoltes
+# "eszelosen lassan" ment, mintha nem hasznalna a tokent.
+export HF_TOKEN="${HF_TOKEN}"
 exec ${LLAMA_SERVER_BIN} \\
     --host 0.0.0.0 --port 8002 \\
     --models-preset ${QWEN_MODELS_INI} \\
