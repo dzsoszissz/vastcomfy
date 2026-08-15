@@ -143,6 +143,7 @@ hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetens
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
 log "downloading workflow templates"
+mkdir /workspace/ComfyUI/custom_nodes/GetAudioDurationSeconds/
 curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/GetAudioDurationSeconds.py -o /workspace/ComfyUI/custom_nodes/GetAudioDurationSeconds/__init__.py
 curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/video_ltx2_3_ia2v-dub-ok-tts_fixed2_autoduration.json -o /workspace/ComfyUI/user/default/workflows/video_ltx2_3_ia2v-dub-ok-tts_fixed2_autoduration.json
 curl -s https://raw.githubusercontent.com/dzsoszissz/vastcomfy/refs/heads/main/LTX-2.3_MSR_sample_workflow_V1_working.json -o /workspace/ComfyUI/user/default/workflows/LTX-2.3_MSR_sample_workflow_V1_working.json
