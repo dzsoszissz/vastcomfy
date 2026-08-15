@@ -143,7 +143,7 @@ hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetens
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
 log "downloading workflow templates"
-for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video (LTX-2.3).json"; do
+for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video \(LTX-2.3\).json"; do
   curl -sLO --retry 3 https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/"$wf" || true
 done
 
