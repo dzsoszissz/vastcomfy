@@ -156,7 +156,11 @@ fi
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "mingyi456/UnCanny-Photorealism-Chroma-DF11-ComfyUI" "uncannyPhotorealism_v12-DF11.safetensors" "$DIFF_DIR/uncannyPhotorealism_v12-DF11.safetensors"
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "t5xxl_fp8_e4m3fn_scaled.safetensors" "$TEXT_DIR/t5xxl_fp8_e4m3fn_scaled.safetensors"
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "lodestones/Chroma" "ae.safetensors" "$VAE_DIR/ae.safetensors"
-hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetensors" "$CKPT_DIR/Qwen-Rapid-AIO-NSFW-v23.safetensors"
+
+
+### most nem kell hf_file "Phr00t/Qwen-Image-Edit-Rapid-AIO" "v23/Qwen-Rapid-AIO-NSFW-v23.safetensors" "$CKPT_DIR/Qwen-Rapid-AIO-NSFW-v23.safetensors"
+
+
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "Comfy-Org/flux1-kontext-dev_ComfyUI" "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors" "$DIFF_DIR/flux1-dev-kontext_fp8_scaled.safetensors"
 # [ELTÁVOLÍTVA - felesleges, Qwen kép-wf nem hasznalja] hf_file "comfyanonymous/flux_text_encoders" "clip_l.safetensors" "$TEXT_DIR/clip_l.safetensors"
 # 4. Workflow sablonok (csak JSON vázlatok, a logikát a plugin kezeli)
