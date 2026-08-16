@@ -174,6 +174,8 @@ for wf in video_ltx2_3_t2v.json video_ltx2_3_i2v.json "First-Last-Frame to Video
   curl -sLO --retry 3 https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/"$wf" || true
 done
 
+echo "/usr/local/cuda-13.2/targets/x86_64-linux/lib" > /etc/ld.so.conf.d/cuda-13.2.conf
+ldconfig
 
 # 5. Manifest & indítás
 cat > /workspace/ltx23_msr_ready.json << EOF
