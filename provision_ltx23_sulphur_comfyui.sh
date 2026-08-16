@@ -127,7 +127,8 @@ hf_file "Sikaworld1990/gemma-3-12b-qat-abliterated-sikaworld-fp4-ltx2" "Gemma3-1
 #hf_file "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients" "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors" "$LORA_DIR/ingredients.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "$UPSCALE_DIR/spatial.x2.11.safetensors"
 hf_file "Lightricks/LTX-2.3" "ltx-2.3-temporal-upscaler-x2-1.0.safetensors" "$UPSCALE_DIR/temporal.x2.10.safetensors"
-
+hf_file "hLightricks/LTX-2.3-22b-IC-LoRA-DubIt" "ltx-2.3-22b-ic-lora-dubit-0.9.safetensors" "$LORA_DIR/ltx-2.3-22b-ic-lora-dubit-0.9.safetensors"
+# hf download hf://Lightricks/LTX-2.3-22b-IC-LoRA-DubIt/ltx-2.3-22b-ic-lora-dubit-0.9.safetensors
 # ===== AUDIO modellek (F5-TTS magyar) =====
 # niknah node: checkpoints/F5-TTS/, a vocab a modell nevén .txt kiterjesztéssel
 F5_DIR="$CKPT_DIR/F5-TTS"
