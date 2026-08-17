@@ -16,7 +16,9 @@ export HF_XET_NUM_CONCURRENT_RANGE_GETS="64"
 export HF_HUB_DOWNLOAD_TIMEOUT="120"
 export HF_HUB_ETAG_TIMEOUT="30"
 export HF_HUB_DISABLE_XET="0"
+export HF_HUB_DISABLE_TELEMETRY="0"
 export DO_NOT_TRACK="1"
+export export HF_HUB_ENABLE_HF_TRANSFER=1
 
 COMFYUI_ROOT="${COMFYUI_ROOT:-/workspace/ComfyUI}"
 CKPT_DIR="$COMFYUI_ROOT/models/checkpoints"
@@ -41,7 +43,7 @@ PY="/venv/main/bin/python3"
 PIP="$PY -m pip"
 
 log "install/update huggingface_hub & hf_xet"
-$PIP install -U --no-cache-dir "huggingface_hub[hf_xet]" >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
+$PIP install -U --no-cache-dir huggingface_hub hf_xet xet-core >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
 $PIP install "jiwer<3.0"
 # --- KÖTELEZŐ KORNIA VERZIÓ (Módosítás vége) ---
 #pip install kornia==0.7.2 --upgrade --force-reinstall --no-cache-dir
@@ -55,7 +57,7 @@ $PIP install --no-cache-dir --force-reinstall --no-deps kornia==0.7.2 kornia-rs=
 HFCLI="$(dirname "$PY")/hf"
 [ -x "$HFCLI" ] || HFCLI="$(command -v hf || command -v huggingface-cli)"
 [ -x "$HFCLI" ] || fail "hf cli not found"
-
+"$HFCLI" update
 hf_file() {
   local repo="$1" src="$2" dest="$3"
   if [ -s "$dest" ]; then log "exists: $dest"; return 0; fi
