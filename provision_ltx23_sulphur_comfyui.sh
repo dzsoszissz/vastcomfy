@@ -43,7 +43,7 @@ PY="/venv/main/bin/python3"
 PIP="$PY -m pip"
 
 log "install/update huggingface_hub & hf_xet"
-$PIP install -Uhuggingface_hub[hf_xet] >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
+
 $PIP install "jiwer<3.0"
 # --- KÖTELEZŐ KORNIA VERZIÓ (Módosítás vége) ---
 #pip install kornia==0.7.2 --upgrade --force-reinstall --no-cache-dir
@@ -110,6 +110,7 @@ new = "from kornia.geometry.transform.pyramid import (\n    PyrUp,\n    build_la
 if old in c: open(target, 'w').write(c.replace(old, new))
 PYEOF
 
+$PIP install -U huggingface_hub[hf_xet] >/tmp/msr_pip.log 2>&1 || fail "pip install failed"
 # 3. Modellek (LTX 2.3 alap, distilled, gemma prompt, ingredients, upscalerok)
 log "downloading models (MSR compatible)"
 
