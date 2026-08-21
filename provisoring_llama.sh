@@ -17,7 +17,7 @@ LOG_FILE="${PROVISIONING_LOG:-/workspace/provisioning.log}"
 exec > >(tee -a "$LOG_FILE") 2>&1
 supervisorctl stop llama
 hf update
-#hf download dzsoszmissz/Huihui-Qwen3.6-35B-A3B-abliterated-bet-GGUF --include "*Q6_K*" 
-hf download HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF --include "*Q6_K*" 
+hf download dzsoszmissz/Huihui-Qwen3.6-35B-A3B-abliterated-bet-GGUF --include "*Q6_K*" 
+#hf download HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF --include "*Q6_K*" 
 supervisorctl start llama
 log "done"
