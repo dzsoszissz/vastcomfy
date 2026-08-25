@@ -19,5 +19,5 @@ supervisorctl stop llama
 hf update
 hf download dzsoszmissz/Huihui-Qwen3.6-35B-A3B-abliterated-bet-GGUF --include "*Q6_K*" 
 #hf download HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF --include "*Q6_K*" 
-supervisorctl start llama
+#supervisorctl start llama
 log "done"
